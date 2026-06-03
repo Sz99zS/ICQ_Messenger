@@ -18,6 +18,7 @@ import org.example.protocol.Message;
 
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 
 /**
  * Контроллер главного окна чата.
@@ -54,12 +55,7 @@ public class MainChatController implements ClientServiceListener {
 
         contactList.setItems(contacts);
         contactList.setCellFactory(lv -> new ContactCell());
-        // Демо-контакты для ПР2; на ПР3 список придёт с сервера (USER_LIST).
-        contacts.addAll(
-                new Contact("echo-бот", Status.ONLINE),
-                new Contact("alice", Status.AWAY),
-                new Contact("bob", Status.OFFLINE)
-        );
+        // Список наполнится с сервера событием USER_LIST (onUserListChanged).
     }
 
     @FXML
@@ -97,6 +93,19 @@ public class MainChatController implements ClientServiceListener {
                     LocalTime.now().format(TIME_FMT),
                     false));
             messageList.scrollTo(messages.size() - 1);
+        });
+    }
+
+    @Override
+    public void onUserListChanged(List<String> nicks) {
+        Platform.runLater(() -> {
+            contacts.clear();
+            for (String n : nicks) {
+                // Себя в списке контактов не показываем.
+                if (!n.equals(nick)) {
+                    contacts.add(new Contact(n, Status.ONLINE));
+                }
+            }
         });
     }
 
