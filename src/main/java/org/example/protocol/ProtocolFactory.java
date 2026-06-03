@@ -3,15 +3,16 @@ package org.example.protocol;
 /**
  * Фабрика кодека протокола — единственная точка выбора формата.
  *
- * <p>Сейчас (ПР3) возвращает текстовый кодек. На ПР4 здесь будет возвращаться
- * {@code XmlProtocolCodec}, и этого достаточно, чтобы весь обмен перешёл на XML
- * — ни сетевой слой, ни сервер, ни клиент менять не придётся.
+ * <p>На ПР4 обмен переведён на XML ({@link XmlProtocolCodec}): достаточно было
+ * сменить возвращаемое значение здесь — ни сетевой слой, ни сервер, ни клиент
+ * менять не пришлось. Текстовый кодек {@link TextProtocolCodec} оставлен как
+ * запасная стратегия (и удобен для отладки/тестов).
  */
 public final class ProtocolFactory {
 
     private ProtocolFactory() { }
 
     public static ProtocolCodec createCodec() {
-        return new TextProtocolCodec();
+        return new XmlProtocolCodec();
     }
 }
