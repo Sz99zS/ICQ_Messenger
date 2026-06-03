@@ -1,68 +1,135 @@
 package org.example.client.service;
 
+import org.example.net.Connection;
 import org.example.protocol.Message;
+import org.example.protocol.MessageType;
+import org.example.protocol.ProtocolFactory;
+
+import java.io.IOException;
+import java.net.Socket;
+import java.util.List;
 
 /**
- * Фасад клиента — единственная точка, через которую GUI работает с «бэкендом».
+ * Фасад клиента — единственная точка, через которую GUI работает с сетью.
  *
- * <p>Это и есть «база под сеть», заложенная заранее: контроллеры зовут
- * {@link #connect}, {@link #login}, {@link #sendMessage}, а откуда берутся
- * данные — локальное эхо (ПР2) или реальный сокет (ПР3) — им не важно.
- * На ПР3 здесь появятся {@code Socket} и поток-читатель, а сигнатуры методов
- * и контракт со слушателем НЕ изменятся, поэтому GUI переписывать не придётся.
+ * <p>На ПР3 эхо-заглушка заменена реальным {@link Socket}: сервис подключается
+ * к серверу, отправляет {@code LOGIN}, а входящие сообщения читает в отдельном
+ * потоке-читателе и пробрасывает в GUI через {@link ClientServiceListener}.
+ * Сигнатуры методов и контракт со слушателем не изменились — GUI трогать не
+ * пришлось.
  *
- * <p>Текущая реализация (ПР2) — заглушка с локальным «эхо-ботом»: всё, что
- * отправляет пользователь, возвращается ответом. Это позволяет полностью
- * проверить интерфейс (пузыри, темы, прокрутку) ещё до появления сервера.
+ * <p>Порядок использования из контроллера входа:
+ * {@link #connect} (может бросить {@link IOException}) → выставить слушателя →
+ * {@link #start}.
  */
 public class ClientService {
 
     private ClientServiceListener listener;
     private String nick;
-    private boolean connected;
+
+    private Socket socket;
+    private Connection connection;
+    private Thread readerThread;
+    private volatile boolean running;
 
     public void setListener(ClientServiceListener listener) {
         this.listener = listener;
     }
 
     /**
-     * Подключение к серверу. На ПР2 — мгновенно «успешно» (без сети).
-     * На ПР3 здесь будет {@code new Socket(host, port)} и запуск чтения.
+     * Открывает соединение и отправляет запрос на вход. Поток-читатель ещё не
+     * запущен (см. {@link #start}), поэтому ответ сервера буферизуется сокетом
+     * и не теряется, пока контроллер выставляет слушателя.
+     *
+     * @throws IOException если не удалось подключиться к серверу
      */
-    public void connect(String host, int port, String nick) {
+    public void connect(String host, int port, String nick) throws IOException {
         this.nick = nick;
-        this.connected = true;
-        if (listener != null) {
-            listener.onConnected();
+        this.socket = new Socket(host, port);
+        this.connection = new Connection(socket, ProtocolFactory.createCodec());
+        connection.send(Message.login(nick));
+    }
+
+    /** Запускает фоновое чтение сообщений с сервера. */
+    public void start() {
+        running = true;
+        readerThread = new Thread(this::readLoop, "icq-reader");
+        readerThread.setDaemon(true);
+        readerThread.start();
+    }
+
+    /** Цикл чтения: выполняется в сетевом потоке, не в потоке JavaFX. */
+    private void readLoop() {
+        try {
+            Message msg;
+            while (running && (msg = connection.receive()) != null) {
+                dispatch(msg);
+            }
+        } catch (IOException e) {
+            if (running) {
+                notifyError("Соединение прервано: " + e.getMessage());
+            }
+        } finally {
+            running = false;
+            if (listener != null) {
+                listener.onDisconnected();
+            }
         }
     }
 
-    /** Запрос на вход под ником (на ПР2 совмещён с connect). */
-    public void login(String nick) {
-        this.nick = nick;
-    }
-
-    /**
-     * Отправка сообщения. На ПР2 — локальное эхо обратно в ленту,
-     * чтобы было видно входящие пузыри. На ПР3 — отправка в сокет.
-     */
-    public void sendMessage(String to, String text) {
-        if (!connected || listener == null) {
+    /** Раскладывает входящее сообщение по событиям слушателя. */
+    private void dispatch(Message msg) {
+        if (listener == null) {
             return;
         }
-        // ЭХО (только ПР2): сервер появится на ПР3 и заменит этот блок.
-        Message echo = Message.text("echo-бот", nick, "Эхо: " + text);
-        listener.onMessage(echo);
-    }
-
-    /** Отключение от сервера. */
-    public void disconnect() {
-        connected = false;
-        if (listener != null) {
-            listener.onDisconnected();
+        switch (msg.getType()) {
+            case LOGIN_OK -> listener.onConnected();
+            case LOGIN_FAIL -> {
+                notifyError("Вход отклонён: " + msg.getBody());
+                disconnect();
+            }
+            case MESSAGE -> listener.onMessage(msg);
+            case USER_LIST -> listener.onUserListChanged(parseNicks(msg.getBody()));
+            case USER_JOINED, USER_LEFT -> { /* список придёт отдельным USER_LIST */ }
+            case ERROR -> notifyError(msg.getBody());
+            default -> { /* TYPING/PING — на ПР5 */ }
         }
     }
 
-    public boolean isConnected() { return connected; }
+    private List<String> parseNicks(String body) {
+        if (body == null || body.isBlank()) {
+            return List.of();
+        }
+        return List.of(body.split(","));
+    }
+
+    /** Отправка сообщения на сервер. */
+    public void sendMessage(String to, String text) {
+        if (connection == null || !running) {
+            return;
+        }
+        try {
+            connection.send(new Message(MessageType.MESSAGE, nick, to, text,
+                    System.currentTimeMillis()));
+        } catch (IOException e) {
+            notifyError("Не удалось отправить: " + e.getMessage());
+        }
+    }
+
+    /** Закрывает соединение и останавливает чтение. */
+    public void disconnect() {
+        running = false;
+        if (connection != null) {
+            connection.close();
+        }
+    }
+
+    private void notifyError(String reason) {
+        if (listener != null) {
+            listener.onError(reason);
+        }
+    }
+
+    public boolean isConnected() { return running; }
     public String getNick()      { return nick; }
 }

@@ -8,6 +8,8 @@ import javafx.scene.control.TextField;
 import javafx.stage.Stage;
 import org.example.client.service.ClientService;
 
+import java.io.IOException;
+
 /**
  * Контроллер экрана входа.
  *
@@ -49,22 +51,31 @@ public class LoginController {
             return;
         }
 
-        service.connect(host, port, nick);
+        // Подключаемся ДО открытия чата: при ошибке остаёмся на экране входа.
+        try {
+            service.connect(host, port, nick);
+        } catch (IOException e) {
+            statusLabel.setText("Не удалось подключиться: " + e.getMessage());
+            return;
+        }
         openChat(nick);
     }
 
-    /** Загружает главное окно и передаёт управление его контроллеру. */
+    /** Загружает главное окно, выставляет слушателя и запускает чтение. */
     private void openChat(String nick) {
         try {
             FXMLLoader loader = new FXMLLoader(
                     getClass().getResource("/org/example/client/view/MainChatView.fxml"));
             Parent root = loader.load();
             MainChatController controller = loader.getController();
-            controller.init(service, nick);
+            controller.init(service, nick); // здесь сервис получает слушателя
 
             // Переиспользуем сцену — тема (CSS) сохраняется.
             stage.getScene().setRoot(root);
             stage.setTitle("ICQ Messenger — " + nick);
+
+            // Слушатель готов — можно начинать читать сообщения с сервера.
+            service.start();
         } catch (Exception e) {
             statusLabel.setText("Не удалось открыть чат: " + e.getMessage());
         }
