@@ -1,5 +1,6 @@
 package org.example.client.controller;
 
+import javafx.animation.PauseTransition;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -8,9 +9,11 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
 import javafx.scene.control.TextField;
+import javafx.util.Duration;
 import org.example.client.model.ChatMessage;
 import org.example.client.model.Contact;
 import org.example.client.model.Status;
+import org.example.client.model.UserPresence;
 import org.example.client.service.ClientService;
 import org.example.client.service.ClientServiceListener;
 import org.example.client.ui.ThemeManager;
@@ -18,7 +21,9 @@ import org.example.protocol.Message;
 
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Контроллер главного окна чата.
@@ -34,6 +39,7 @@ public class MainChatController implements ClientServiceListener {
     @FXML private ListView<ChatMessage> messageList;
     @FXML private TextField inputField;
     @FXML private Label titleLabel;
+    @FXML private Label typingLabel;
 
     private ClientService service;
     private String nick;
@@ -41,6 +47,16 @@ public class MainChatController implements ClientServiceListener {
     private final ObservableList<ChatMessage> messages = FXCollections.observableArrayList();
     private final ObservableList<Contact> contacts = FXCollections.observableArrayList();
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
+
+    // --- индикатор «печатает…» ---
+    /** Ники собеседников, которые сейчас печатают (для строки над полем ввода). */
+    private final Set<String> typingNicks = new LinkedHashSet<>();
+    /** Отправлен ли уже на сервер сигнал «я печатаю» (чтобы не слать на каждый символ). */
+    private boolean typingSent;
+    /** После паузы в наборе шлём «перестал печатать». */
+    private PauseTransition typingStopTimer;
+    /** Страховка: гасим чужой индикатор, если «стоп» от собеседника потерялся. */
+    private PauseTransition typingClearTimer;
 
     /** Внедрение зависимостей после загрузки FXML. */
     public void init(ClientService service, String nick) {
@@ -56,6 +72,48 @@ public class MainChatController implements ClientServiceListener {
         contactList.setItems(contacts);
         contactList.setCellFactory(lv -> new ContactCell());
         // Список наполнится с сервера событием USER_LIST (onUserListChanged).
+
+        typingLabel.setText("");
+        typingLabel.setVisible(false);
+        // Место под строкой резервируется только когда она видима — без скачков layout.
+        typingLabel.managedProperty().bind(typingLabel.visibleProperty());
+        setupTypingTimers();
+        // Набор текста → шлём «печатает…» (с троттлингом, см. onInputChanged).
+        inputField.textProperty().addListener((obs, old, val) -> onInputChanged(val));
+    }
+
+    /** Создаёт таймеры троттлинга/страховки (на потоке FX, после загрузки FXML). */
+    private void setupTypingTimers() {
+        typingStopTimer = new PauseTransition(Duration.seconds(2));
+        typingStopTimer.setOnFinished(e -> stopTyping());
+
+        typingClearTimer = new PauseTransition(Duration.seconds(3));
+        typingClearTimer.setOnFinished(e -> {
+            typingNicks.clear();
+            updateTypingLabel();
+        });
+    }
+
+    /** Реакция на изменение текста в поле ввода: сообщаем серверу о наборе. */
+    private void onInputChanged(String text) {
+        if (text == null || text.isEmpty()) {
+            stopTyping();
+            return;
+        }
+        if (!typingSent) {
+            service.sendTyping(true);
+            typingSent = true;
+        }
+        typingStopTimer.playFromStart(); // перезапускаем отсчёт паузы
+    }
+
+    /** Сообщает серверу, что мы перестали печатать (если до этого печатали). */
+    private void stopTyping() {
+        typingStopTimer.stop();
+        if (typingSent) {
+            service.sendTyping(false);
+            typingSent = false;
+        }
     }
 
     @FXML
@@ -70,6 +128,7 @@ public class MainChatController implements ClientServiceListener {
 
         service.sendMessage(Message.BROADCAST, text);
         inputField.clear();
+        stopTyping(); // отправили — больше не «печатаем»
     }
 
     @FXML
@@ -97,16 +156,44 @@ public class MainChatController implements ClientServiceListener {
     }
 
     @Override
-    public void onUserListChanged(List<String> nicks) {
+    public void onUserListChanged(List<UserPresence> users) {
         Platform.runLater(() -> {
             contacts.clear();
-            for (String n : nicks) {
+            for (UserPresence u : users) {
                 // Себя в списке контактов не показываем.
-                if (!n.equals(nick)) {
-                    contacts.add(new Contact(n, Status.ONLINE));
+                if (!u.nick().equals(nick)) {
+                    contacts.add(new Contact(u.nick(), u.status()));
                 }
             }
         });
+    }
+
+    @Override
+    public void onTyping(String who, boolean typing) {
+        Platform.runLater(() -> {
+            if (who == null || who.equals(nick)) {
+                return; // свой же набор не показываем
+            }
+            if (typing) {
+                typingNicks.add(who);
+                typingClearTimer.playFromStart(); // страховка от потерянного «стоп»
+            } else {
+                typingNicks.remove(who);
+            }
+            updateTypingLabel();
+        });
+    }
+
+    /** Перерисовывает строку «X печатает…» под лентой сообщений. */
+    private void updateTypingLabel() {
+        if (typingNicks.isEmpty()) {
+            typingLabel.setText("");
+            typingLabel.setVisible(false);
+            return;
+        }
+        String who = String.join(", ", typingNicks);
+        typingLabel.setText(who + (typingNicks.size() == 1 ? " печатает…" : " печатают…"));
+        typingLabel.setVisible(true);
     }
 
     @Override

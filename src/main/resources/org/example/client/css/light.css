@@ -69,3 +69,5 @@
     -fx-padding: 8;
 }
 .input-bar { -fx-background-color: #ffffff; }
+.input-area { -fx-background-color: #ffffff; }
+.typing-label { -fx-text-fill: #6b7280; -fx-font-style: italic; -fx-font-size: 11; }

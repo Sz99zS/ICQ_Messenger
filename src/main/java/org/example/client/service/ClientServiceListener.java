@@ -1,5 +1,6 @@
 package org.example.client.service;
 
+import org.example.client.model.UserPresence;
 import org.example.protocol.Message;
 
 import java.util.List;
@@ -22,8 +23,11 @@ public interface ClientServiceListener {
     /** Пришло текстовое сообщение от другого пользователя. */
     void onMessage(Message message);
 
-    /** Обновился список онлайн-пользователей. */
-    void onUserListChanged(List<String> nicks);
+    /** Обновился список онлайн-пользователей (с их статусами). */
+    void onUserListChanged(List<UserPresence> users);
+
+    /** Сменилось состояние «печатает…» у пользователя {@code nick}. */
+    void onTyping(String nick, boolean typing);
 
     /** Соединение разорвано. */
     void onDisconnected();
