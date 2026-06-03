@@ -1,5 +1,7 @@
 package org.example.client.service;
 
+import org.example.client.model.Status;
+import org.example.client.model.UserPresence;
 import org.example.net.Connection;
 import org.example.protocol.Message;
 import org.example.protocol.MessageType;
@@ -7,6 +9,7 @@ import org.example.protocol.ProtocolFactory;
 
 import java.io.IOException;
 import java.net.Socket;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -89,18 +92,37 @@ public class ClientService {
                 disconnect();
             }
             case MESSAGE -> listener.onMessage(msg);
-            case USER_LIST -> listener.onUserListChanged(parseNicks(msg.getBody()));
+            case USER_LIST -> listener.onUserListChanged(parsePresence(msg.getBody()));
+            case TYPING -> listener.onTyping(msg.getFrom(), "1".equals(msg.getBody()));
             case USER_JOINED, USER_LEFT -> { /* список придёт отдельным USER_LIST */ }
             case ERROR -> notifyError(msg.getBody());
-            default -> { /* TYPING/PING — на ПР5 */ }
+            default -> { /* PING — на будущее */ }
         }
     }
 
-    private List<String> parseNicks(String body) {
+    /** Разбирает тело USER_LIST формата {@code ник:СТАТУС,...} в список присутствий. */
+    private List<UserPresence> parsePresence(String body) {
         if (body == null || body.isBlank()) {
             return List.of();
         }
-        return List.of(body.split(","));
+        List<UserPresence> users = new ArrayList<>();
+        for (String token : body.split(",")) {
+            int sep = token.lastIndexOf(':');
+            String nick = sep < 0 ? token : token.substring(0, sep);
+            if (nick.isBlank()) {
+                continue;
+            }
+            Status status = Status.ONLINE;
+            if (sep >= 0) {
+                try {
+                    status = Status.valueOf(token.substring(sep + 1));
+                } catch (IllegalArgumentException ignored) {
+                    // неизвестный статус — считаем онлайн
+                }
+            }
+            users.add(new UserPresence(nick, status));
+        }
+        return users;
     }
 
     /** Отправка сообщения на сервер. */
@@ -113,6 +135,22 @@ public class ClientService {
                     System.currentTimeMillis()));
         } catch (IOException e) {
             notifyError("Не удалось отправить: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Сообщает серверу, что пользователь печатает (или перестал). Доставляется
+     * всем собеседникам. Ошибки глушим — индикатор «печатает…» некритичен.
+     */
+    public void sendTyping(boolean typing) {
+        if (connection == null || !running) {
+            return;
+        }
+        try {
+            connection.send(new Message(MessageType.TYPING, nick, Message.BROADCAST,
+                    typing ? "1" : "0", System.currentTimeMillis()));
+        } catch (IOException ignored) {
+            // намеренно тихо
         }
     }
 

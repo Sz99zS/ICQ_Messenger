@@ -6,6 +6,7 @@
 <?import javafx.scene.control.TextField?>
 <?import javafx.scene.layout.BorderPane?>
 <?import javafx.scene.layout.HBox?>
+<?import javafx.scene.layout.VBox?>
 <?import javafx.scene.layout.Priority?>
 <?import javafx.geometry.Insets?>
 
@@ -32,10 +33,15 @@
     </center>
 
     <bottom>
-        <HBox spacing="8" alignment="CENTER" styleClass="input-bar">
-            <padding><Insets top="8" right="10" bottom="10" left="10"/></padding>
-            <TextField fx:id="inputField" promptText="Сообщение..." onAction="#onSend" HBox.hgrow="ALWAYS"/>
-            <Button text="Отправить" onAction="#onSend" defaultButton="true" styleClass="primary-button"/>
-        </HBox>
+        <VBox styleClass="input-area">
+            <Label fx:id="typingLabel" styleClass="typing-label" managed="false" visible="false">
+                <padding><Insets top="2" right="14" bottom="0" left="14"/></padding>
+            </Label>
+            <HBox spacing="8" alignment="CENTER" styleClass="input-bar">
+                <padding><Insets top="8" right="10" bottom="10" left="10"/></padding>
+                <TextField fx:id="inputField" promptText="Сообщение..." onAction="#onSend" HBox.hgrow="ALWAYS"/>
+                <Button text="Отправить" onAction="#onSend" defaultButton="true" styleClass="primary-button"/>
+            </HBox>
+        </VBox>
     </bottom>
 </BorderPane>

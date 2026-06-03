@@ -5,6 +5,8 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Серверная часть мессенджера ICQ.
@@ -25,6 +27,8 @@ public class ChatServer {
     private final MessageRouter router = new MessageRouter(registry);
     // Поток на клиента: их число заранее неизвестно — берём кэширующий пул.
     private final ExecutorService pool = Executors.newCachedThreadPool();
+    // Периодически пересчитывает статусы (ONLINE/AWAY) и рассылает изменения.
+    private final ScheduledExecutorService statusTicker = Executors.newSingleThreadScheduledExecutor();
 
     public ChatServer(int port) {
         this.port = port;
@@ -32,6 +36,9 @@ public class ChatServer {
 
     public void start() {
         System.out.println("[server] Запуск на порту " + port + " ...");
+        // Раз в 10с проверяем, не «отошёл» ли кто-то (AWAY), и рассылаем изменения.
+        statusTicker.scheduleAtFixedRate(registry::broadcastUserListIfChanged,
+                10, 10, TimeUnit.SECONDS);
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             System.out.println("[server] Готов принимать подключения.");
             while (true) {
@@ -41,6 +48,7 @@ public class ChatServer {
         } catch (IOException e) {
             System.out.println("[server] Критическая ошибка сервера: " + e.getMessage());
         } finally {
+            statusTicker.shutdownNow();
             pool.shutdownNow();
         }
     }

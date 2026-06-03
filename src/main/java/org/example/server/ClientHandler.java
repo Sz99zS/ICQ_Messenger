@@ -40,6 +40,8 @@ public class ClientHandler implements Runnable {
             // Основной цикл приёма сообщений.
             Message msg;
             while ((msg = connection.receive()) != null) {
+                registry.touch(nick);                 // любое сообщение = активность
+                registry.broadcastUserListIfChanged(); // вернулся из AWAY → обновить статус
                 router.route(msg, this);
             }
         } catch (IOException e) {
@@ -71,26 +73,13 @@ public class ClientHandler implements Runnable {
 
         connection.send(new Message(MessageType.LOGIN_OK, "server", nick, null,
                 System.currentTimeMillis()));
-        // Новичку — текущий список онлайн; остальным — что появился новый.
-        sendUserList();
+        // Новичку — текущий список онлайн со статусами; остальным — что появился новый.
+        connection.send(new Message(MessageType.USER_LIST, "server", nick,
+                registry.formatUserList(), System.currentTimeMillis()));
         registry.broadcast(new Message(MessageType.USER_JOINED, "server", null, nick,
                 System.currentTimeMillis()), nick);
-        broadcastUserListToAll();
+        registry.broadcastUserList();
         return true;
-    }
-
-    /** Отправляет этому клиенту список онлайн-пользователей (ники через запятую). */
-    private void sendUserList() throws IOException {
-        String list = String.join(",", registry.onlineNicks());
-        connection.send(new Message(MessageType.USER_LIST, "server", nick, list,
-                System.currentTimeMillis()));
-    }
-
-    /** Рассылает обновлённый список онлайн всем клиентам. */
-    private void broadcastUserListToAll() {
-        String list = String.join(",", registry.onlineNicks());
-        registry.broadcast(new Message(MessageType.USER_LIST, "server", null, list,
-                System.currentTimeMillis()), null);
     }
 
     private void disconnect() {
@@ -99,7 +88,7 @@ public class ClientHandler implements Runnable {
             System.out.println("[server] Вышел: " + nick);
             registry.broadcast(new Message(MessageType.USER_LEFT, "server", null, nick,
                     System.currentTimeMillis()), null);
-            broadcastUserListToAll();
+            registry.broadcastUserList();
         }
         connection.close();
     }
