@@ -1,0 +1,71 @@
+/* Светлая тема ICQ Messenger (ПР2). Весь "вайб" — здесь, без правок кода. */
+
+.root {
+    -fx-font-family: "Segoe UI", system-ui, sans-serif;
+    -fx-background-color: #f0f2f5;
+}
+
+/* ---- Экран входа ---- */
+.login-root { -fx-background-color: #ffffff; }
+.login-title { -fx-font-size: 26px; -fx-font-weight: bold; -fx-text-fill: #ff8a00; }
+.login-subtitle { -fx-font-size: 13px; -fx-text-fill: #6b7280; }
+.status-label { -fx-text-fill: #d12f2f; -fx-font-size: 12px; }
+
+/* ---- Кнопки ---- */
+.primary-button {
+    -fx-background-color: #ff8a00;
+    -fx-text-fill: white;
+    -fx-font-weight: bold;
+    -fx-background-radius: 8;
+    -fx-cursor: hand;
+}
+.primary-button:hover { -fx-background-color: #ff9e2c; }
+.ghost-button {
+    -fx-background-color: transparent;
+    -fx-text-fill: #374151;
+    -fx-border-color: #d1d5db;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+    -fx-cursor: hand;
+}
+
+/* ---- Верхняя панель ---- */
+.top-bar { -fx-background-color: #ffffff; -fx-border-color: transparent transparent #e5e7eb transparent; }
+.top-title { -fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: #111827; }
+
+/* ---- Списки ---- */
+.contact-list, .message-list { -fx-background-color: transparent; -fx-border-color: transparent; }
+.message-list .list-cell { -fx-background-color: transparent; -fx-padding: 2 6 2 6; }
+.contact-list .list-cell { -fx-background-color: transparent; -fx-padding: 8 10 8 10; -fx-text-fill: #1f2937; }
+.contact-list .list-cell:filled:hover { -fx-background-color: #e8eaed; }
+
+/* ---- Пузыри сообщений ---- */
+.bubble-mine {
+    -fx-background-color: #ff8a00;
+    -fx-text-fill: white;
+    -fx-padding: 8 12 8 12;
+    -fx-background-radius: 14 14 2 14;
+}
+.bubble-other {
+    -fx-background-color: #ffffff;
+    -fx-text-fill: #111827;
+    -fx-padding: 8 12 8 12;
+    -fx-background-radius: 14 14 14 2;
+    -fx-border-color: #e5e7eb;
+    -fx-border-radius: 14 14 14 2;
+}
+.bubble-meta { -fx-font-size: 10px; -fx-text-fill: #9ca3af; }
+
+/* ---- Индикаторы статуса контакта ---- */
+.status-online  { -fx-border-color: transparent transparent transparent #22c55e; -fx-border-width: 0 0 0 3; }
+.status-away    { -fx-border-color: transparent transparent transparent #f59e0b; -fx-border-width: 0 0 0 3; }
+.status-offline { -fx-border-color: transparent transparent transparent #9ca3af; -fx-border-width: 0 0 0 3; -fx-opacity: 0.6; }
+
+/* ---- Поля ввода ---- */
+.text-field {
+    -fx-background-radius: 8;
+    -fx-border-radius: 8;
+    -fx-border-color: #d1d5db;
+    -fx-padding: 8;
+}
+.input-bar { -fx-background-color: #ffffff; }

@@ -1,0 +1,72 @@
+/* Тёмная тема ICQ Messenger (ПР2). Переключается кнопкой "Сменить тему". */
+
+.root {
+    -fx-font-family: "Segoe UI", system-ui, sans-serif;
+    -fx-background-color: #1f2227;
+}
+
+/* ---- Экран входа ---- */
+.login-root { -fx-background-color: #15171b; }
+.login-title { -fx-font-size: 26px; -fx-font-weight: bold; -fx-text-fill: #ffb347; }
+.login-subtitle { -fx-font-size: 13px; -fx-text-fill: #9aa0a6; }
+.status-label { -fx-text-fill: #ff6b6b; -fx-font-size: 12px; }
+
+/* ---- Кнопки ---- */
+.primary-button {
+    -fx-background-color: #ff8a00;
+    -fx-text-fill: white;
+    -fx-font-weight: bold;
+    -fx-background-radius: 8;
+    -fx-cursor: hand;
+}
+.primary-button:hover { -fx-background-color: #ffa733; }
+.ghost-button {
+    -fx-background-color: transparent;
+    -fx-text-fill: #e5e7eb;
+    -fx-border-color: #3a3f47;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+    -fx-cursor: hand;
+}
+
+/* ---- Верхняя панель ---- */
+.top-bar { -fx-background-color: #15171b; -fx-border-color: transparent transparent #2a2e35 transparent; }
+.top-title { -fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: #f3f4f6; }
+
+/* ---- Списки ---- */
+.contact-list, .message-list { -fx-background-color: transparent; -fx-border-color: transparent; }
+.message-list .list-cell { -fx-background-color: transparent; -fx-padding: 2 6 2 6; }
+.contact-list .list-cell { -fx-background-color: transparent; -fx-padding: 8 10 8 10; -fx-text-fill: #e5e7eb; }
+.contact-list .list-cell:filled:hover { -fx-background-color: #2a2e35; }
+
+/* ---- Пузыри сообщений ---- */
+.bubble-mine {
+    -fx-background-color: #ff8a00;
+    -fx-text-fill: white;
+    -fx-padding: 8 12 8 12;
+    -fx-background-radius: 14 14 2 14;
+}
+.bubble-other {
+    -fx-background-color: #2a2e35;
+    -fx-text-fill: #f3f4f6;
+    -fx-padding: 8 12 8 12;
+    -fx-background-radius: 14 14 14 2;
+}
+.bubble-meta { -fx-font-size: 10px; -fx-text-fill: #9aa0a6; }
+
+/* ---- Индикаторы статуса контакта ---- */
+.status-online  { -fx-border-color: transparent transparent transparent #22c55e; -fx-border-width: 0 0 0 3; }
+.status-away    { -fx-border-color: transparent transparent transparent #f59e0b; -fx-border-width: 0 0 0 3; }
+.status-offline { -fx-border-color: transparent transparent transparent #6b7280; -fx-border-width: 0 0 0 3; -fx-opacity: 0.6; }
+
+/* ---- Поля ввода ---- */
+.text-field {
+    -fx-background-radius: 8;
+    -fx-border-radius: 8;
+    -fx-border-color: #3a3f47;
+    -fx-background-color: #2a2e35;
+    -fx-text-fill: #f3f4f6;
+    -fx-prompt-text-fill: #9aa0a6;
+    -fx-padding: 8;
+}
+.input-bar { -fx-background-color: #15171b; }
