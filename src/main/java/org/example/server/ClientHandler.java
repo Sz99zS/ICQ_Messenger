@@ -40,8 +40,14 @@ public class ClientHandler implements Runnable {
             // Основной цикл приёма сообщений.
             Message msg;
             while ((msg = connection.receive()) != null) {
-                registry.touch(nick);                 // любое сообщение = активность
-                registry.broadcastUserListIfChanged(); // вернулся из AWAY → обновить статус
+                if (msg.getType() == MessageType.PING) {
+                    // Heartbeat: подтверждает живость, но активностью не считается
+                    // (иначе клиент никогда не уходил бы в AWAY) и не маршрутизируется.
+                    registry.recordHeartbeat(nick);
+                    continue;
+                }
+                registry.recordActivity(nick);         // реальное сообщение = активность
+                registry.broadcastUserListIfChanged();  // вернулся из AWAY → обновить статус
                 router.route(msg, this);
             }
         } catch (IOException e) {
@@ -80,6 +86,18 @@ public class ClientHandler implements Runnable {
                 System.currentTimeMillis()), nick);
         registry.broadcastUserList();
         return true;
+    }
+
+    /**
+     * Принудительно закрывает соединение, признанное мёртвым «жнецом». Закрытие
+     * сокета разблокирует {@link #run()} (его {@code receive()} вернёт null или
+     * бросит исключение), и штатный {@code finally → disconnect()} сам снимет
+     * клиента с регистрации и разошлёт USER_LEFT.
+     */
+    public void disconnectStale() {
+        System.out.println("[server] Нет ответа от " + nick
+                + " — закрываю мёртвое соединение");
+        connection.close();
     }
 
     private void disconnect() {

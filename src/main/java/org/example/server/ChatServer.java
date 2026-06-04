@@ -27,8 +27,11 @@ public class ChatServer {
     private final MessageRouter router = new MessageRouter(registry);
     // Поток на клиента: их число заранее неизвестно — берём кэширующий пул.
     private final ExecutorService pool = Executors.newCachedThreadPool();
-    // Периодически пересчитывает статусы (ONLINE/AWAY) и рассылает изменения.
+    // Периодически пересчитывает статусы (ONLINE/AWAY) и реапит мёртвые соединения.
     private final ScheduledExecutorService statusTicker = Executors.newSingleThreadScheduledExecutor();
+
+    /** Соединение без единого кадра (включая PING) дольше этого времени — мёртвое. */
+    private static final long DEAD_AFTER_MS = 15_000;
 
     public ChatServer(int port) {
         this.port = port;
@@ -39,6 +42,9 @@ public class ChatServer {
         // Раз в 10с проверяем, не «отошёл» ли кто-то (AWAY), и рассылаем изменения.
         statusTicker.scheduleAtFixedRate(registry::broadcastUserListIfChanged,
                 10, 10, TimeUnit.SECONDS);
+        // Раз в 5с «жнём» мёртвые соединения (нет кадров/PING дольше DEAD_AFTER_MS).
+        statusTicker.scheduleAtFixedRate(() -> registry.reapStale(DEAD_AFTER_MS),
+                5, 5, TimeUnit.SECONDS);
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             System.out.println("[server] Готов принимать подключения.");
             while (true) {
