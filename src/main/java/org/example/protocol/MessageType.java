@@ -36,5 +36,8 @@ public enum MessageType {
     ERROR,
 
     /** Проверка живости соединения (keep-alive). */
-    PING
+    PING,
+
+    /** Ответ на {@link #PING}: подтверждает, что вторая сторона жива. */
+    PONG
 }

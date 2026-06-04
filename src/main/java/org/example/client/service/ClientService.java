@@ -41,8 +41,14 @@ public class ClientService {
     /** Фоновый heartbeat: шлёт PING, чтобы сервер видел живость соединения. */
     private ScheduledExecutorService heartbeat;
 
+    /** Время последнего полученного PONG (мс) — для детекта «смерти» сервера. */
+    private volatile long lastPong;
+
     /** Период отправки PING (мс). Сервер реапит при отсутствии кадров ~15с. */
     private static final long PING_INTERVAL_MS = 5_000;
+
+    /** Нет PONG дольше этого времени → считаем сервер недоступным (≈3 пинга). */
+    private static final long PONG_TIMEOUT_MS = 15_000;
 
     public void setListener(ClientServiceListener listener) {
         this.listener = listener;
@@ -73,22 +79,31 @@ public class ClientService {
 
     /** Поднимает планировщик, который шлёт PING каждые {@link #PING_INTERVAL_MS}. */
     private void startHeartbeat() {
+        lastPong = System.currentTimeMillis(); // стартовый кредит доверия
         heartbeat = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "icq-heartbeat");
             t.setDaemon(true);
             return t;
         });
-        heartbeat.scheduleAtFixedRate(this::sendPing,
+        heartbeat.scheduleAtFixedRate(this::heartbeatTick,
                 PING_INTERVAL_MS, PING_INTERVAL_MS, TimeUnit.MILLISECONDS);
     }
 
     /**
-     * Отправляет служебный PING. Если запись упала — сервер недоступен: сообщаем
-     * об ошибке и рвём соединение (так клиент узнаёт о «смерти» сервера быстрее,
-     * чем по зависшему чтению).
+     * Тик heartbeat: сперва проверяем, отвечал ли сервер (приходили ли PONG), а
+     * затем шлём очередной PING.
+     *
+     * <p>Двусторонняя проверка: молчаливо «умерший» сервер не всегда роняет
+     * запись PING (данные уходят в буфер ОС), поэтому полагаемся на отсутствие
+     * PONG — так разрыв ловится быстро и надёжно, а не по TCP-таймауту ОС.
      */
-    private void sendPing() {
+    private void heartbeatTick() {
         if (connection == null || !running) {
+            return;
+        }
+        if (System.currentTimeMillis() - lastPong > PONG_TIMEOUT_MS) {
+            notifyError("Сервер не отвечает");
+            disconnect();
             return;
         }
         try {
@@ -134,8 +149,9 @@ public class ClientService {
             case USER_LIST -> listener.onUserListChanged(parsePresence(msg.getBody()));
             case TYPING -> listener.onTyping(msg.getFrom(), "1".equals(msg.getBody()));
             case USER_JOINED, USER_LEFT -> { /* список придёт отдельным USER_LIST */ }
+            case PONG -> lastPong = System.currentTimeMillis(); // сервер жив
             case ERROR -> notifyError(msg.getBody());
-            default -> { /* PING — на будущее */ }
+            default -> { /* прочие служебные типы игнорируем */ }
         }
     }
 
