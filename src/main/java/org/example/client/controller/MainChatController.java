@@ -12,7 +12,6 @@ import javafx.scene.control.TextField;
 import javafx.util.Duration;
 import org.example.client.model.ChatMessage;
 import org.example.client.model.Contact;
-import org.example.client.model.Status;
 import org.example.client.model.UserPresence;
 import org.example.client.service.ClientService;
 import org.example.client.service.ClientServiceListener;
@@ -21,8 +20,10 @@ import org.example.protocol.Message;
 
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -30,8 +31,13 @@ import java.util.Set;
  *
  * <p>Реализует {@link ClientServiceListener}: всё, что приходит «снизу» от
  * сервиса, попадает сюда и отображается. Обновления UI обёрнуты в
- * {@code Platform.runLater}, потому что на ПР3 сервис будет звать эти методы
- * из сетевого потока — и тогда менять контроллер уже не понадобится.
+ * {@code Platform.runLater}, потому что сервис зовёт эти методы из сетевого
+ * потока.
+ *
+ * <p>На ПР6 чат стал многодиалоговым: слева — «Общий чат» (broadcast) и личные
+ * собеседники, у каждого своя история сообщений. Выбор контакта переключает
+ * ленту и адресует отправку: общему чату — {@link Message#BROADCAST}, личке —
+ * ник собеседника (сервер уже умеет доставлять адресно через {@code sendTo}).
  */
 public class MainChatController implements ClientServiceListener {
 
@@ -44,8 +50,17 @@ public class MainChatController implements ClientServiceListener {
     private ClientService service;
     private String nick;
 
-    private final ObservableList<ChatMessage> messages = FXCollections.observableArrayList();
+    /** История по каждому диалогу. Ключ — {@link Contact#getNick()} собеседника. */
+    private final Map<String, ObservableList<ChatMessage>> conversations = new HashMap<>();
+    /** Контакты по нику — чтобы переиспользовать объекты при перестроении списка. */
+    private final Map<String, Contact> contactsByNick = new HashMap<>();
     private final ObservableList<Contact> contacts = FXCollections.observableArrayList();
+
+    /** Постоянная верхняя строка списка — общий чат. */
+    private Contact broadcastContact;
+    /** Контакт, диалог с которым открыт сейчас. */
+    private Contact activeContact;
+
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
 
     // --- индикатор «печатает…» ---
@@ -66,12 +81,16 @@ public class MainChatController implements ClientServiceListener {
 
         titleLabel.setText("Вы вошли как: " + nick);
 
-        messageList.setItems(messages);
         messageList.setCellFactory(lv -> new ChatBubbleCell());
 
         contactList.setItems(contacts);
         contactList.setCellFactory(lv -> new ContactCell());
-        // Список наполнится с сервера событием USER_LIST (onUserListChanged).
+        // Общий чат всегда присутствует и выбран по умолчанию.
+        broadcastContact = Contact.broadcast();
+        contacts.add(broadcastContact);
+        contactList.getSelectionModel().selectedItemProperty()
+                .addListener((obs, old, sel) -> onContactSelected(sel));
+        contactList.getSelectionModel().select(broadcastContact);
 
         typingLabel.setText("");
         typingLabel.setVisible(false);
@@ -80,6 +99,35 @@ public class MainChatController implements ClientServiceListener {
         setupTypingTimers();
         // Набор текста → шлём «печатает…» (с троттлингом, см. onInputChanged).
         inputField.textProperty().addListener((obs, old, val) -> onInputChanged(val));
+    }
+
+    /** Возвращает (создавая при необходимости) историю диалога по ключу. */
+    private ObservableList<ChatMessage> conversationFor(String key) {
+        return conversations.computeIfAbsent(key, k -> FXCollections.observableArrayList());
+    }
+
+    /** Переключение открытого диалога при выборе контакта в списке. */
+    private void onContactSelected(Contact sel) {
+        if (sel == null) {
+            return;
+        }
+        activeContact = sel;
+        sel.setUnread(0); // открыли диалог — непрочитанных больше нет
+        contactList.refresh();
+        ObservableList<ChatMessage> conv = conversationFor(sel.getNick());
+        messageList.setItems(conv);
+        if (!conv.isEmpty()) {
+            messageList.scrollTo(conv.size() - 1);
+        }
+        updateTitle();
+    }
+
+    /** Заголовок окна отражает, с кем сейчас разговор. */
+    private void updateTitle() {
+        String where = activeContact == null || activeContact.isBroadcast()
+                ? "Общий чат"
+                : "Личный чат с " + activeContact.getNick();
+        titleLabel.setText(nick + " — " + where);
     }
 
     /** Создаёт таймеры троттлинга/страховки (на потоке FX, после загрузки FXML). */
@@ -122,11 +170,13 @@ public class MainChatController implements ClientServiceListener {
         if (text.isEmpty()) {
             return;
         }
-        // Своё сообщение сразу в ленту (справа).
-        messages.add(new ChatMessage(nick, text, LocalTime.now().format(TIME_FMT), true));
-        messageList.scrollTo(messages.size() - 1);
+        String target = activeContact == null ? Message.BROADCAST : activeContact.getNick();
+        // Своё сообщение сразу в ленту текущего диалога (справа).
+        ObservableList<ChatMessage> conv = conversationFor(target);
+        conv.add(new ChatMessage(nick, text, LocalTime.now().format(TIME_FMT), true));
+        messageList.scrollTo(conv.size() - 1);
 
-        service.sendMessage(Message.BROADCAST, text);
+        service.sendMessage(target, text);
         inputField.clear();
         stopTyping(); // отправили — больше не «печатаем»
     }
@@ -140,31 +190,65 @@ public class MainChatController implements ClientServiceListener {
 
     @Override
     public void onConnected() {
-        Platform.runLater(() -> titleLabel.setText("Вы вошли как: " + nick + " (онлайн)"));
+        Platform.runLater(this::updateTitle);
     }
 
     @Override
     public void onMessage(Message message) {
         Platform.runLater(() -> {
-            messages.add(new ChatMessage(
+            // Broadcast → в общий чат, личка → в диалог с отправителем.
+            String key = message.isBroadcast() ? Message.BROADCAST : message.getFrom();
+            ObservableList<ChatMessage> conv = conversationFor(key);
+            conv.add(new ChatMessage(
                     message.getFrom(),
                     message.getBody(),
                     LocalTime.now().format(TIME_FMT),
                     false));
-            messageList.scrollTo(messages.size() - 1);
+
+            boolean isActive = activeContact != null && activeContact.getNick().equals(key);
+            if (isActive) {
+                messageList.scrollTo(conv.size() - 1);
+            } else {
+                Contact c = Message.BROADCAST.equals(key) ? broadcastContact : contactsByNick.get(key);
+                if (c != null) {
+                    c.incrementUnread();
+                    contactList.refresh();
+                }
+            }
         });
     }
 
     @Override
     public void onUserListChanged(List<UserPresence> users) {
         Platform.runLater(() -> {
-            contacts.clear();
+            // Перестраиваем список, переиспользуя существующие Contact, чтобы
+            // сохранить счётчики непрочитанных у тех, кто остался онлайн.
+            Map<String, Contact> previous = new HashMap<>(contactsByNick);
+            contactsByNick.clear();
+            contacts.setAll(broadcastContact); // общий чат всегда первый
             for (UserPresence u : users) {
-                // Себя в списке контактов не показываем.
-                if (!u.nick().equals(nick)) {
-                    contacts.add(new Contact(u.nick(), u.status()));
+                if (u.nick().equals(nick)) {
+                    continue; // себя в контактах не показываем
                 }
+                Contact c = previous.get(u.nick());
+                if (c == null) {
+                    c = new Contact(u.nick(), u.status());
+                }
+                c.setStatus(u.status());
+                contactsByNick.put(u.nick(), c);
+                contacts.add(c);
             }
+            // Восстанавливаем открытый диалог: тот же контакт, иначе общий чат.
+            Contact toSelect = broadcastContact;
+            if (activeContact != null && !activeContact.isBroadcast()) {
+                Contact still = contactsByNick.get(activeContact.getNick());
+                if (still != null) {
+                    toSelect = still;
+                }
+            } else if (activeContact != null && activeContact.isBroadcast()) {
+                toSelect = broadcastContact;
+            }
+            contactList.getSelectionModel().select(toSelect);
         });
     }
 
@@ -206,24 +290,30 @@ public class MainChatController implements ClientServiceListener {
         Platform.runLater(() -> titleLabel.setText("Ошибка: " + reason));
     }
 
-    /** Ячейка контакта: ник + цветной кружок статуса. */
+    /** Ячейка контакта: ник + цветной кружок статуса + бейдж непрочитанных. */
     private static class ContactCell extends ListCell<Contact> {
         @Override
         protected void updateItem(Contact item, boolean empty) {
             super.updateItem(item, empty);
+            getStyleClass().removeAll("status-online", "status-away", "status-offline", "contact-broadcast");
             if (empty || item == null) {
                 setText(null);
-                setGraphic(null);
-                getStyleClass().removeAll("status-online", "status-away", "status-offline");
                 return;
             }
-            setText(item.getNick());
-            getStyleClass().removeAll("status-online", "status-away", "status-offline");
-            getStyleClass().add(switch (item.getStatus()) {
-                case ONLINE -> "status-online";
-                case AWAY -> "status-away";
-                case OFFLINE -> "status-offline";
-            });
+            String label = item.isBroadcast() ? "# Общий чат" : item.getNick();
+            if (item.getUnread() > 0) {
+                label += "  (" + item.getUnread() + ")";
+            }
+            setText(label);
+            if (item.isBroadcast()) {
+                getStyleClass().add("contact-broadcast");
+            } else {
+                getStyleClass().add(switch (item.getStatus()) {
+                    case ONLINE -> "status-online";
+                    case AWAY -> "status-away";
+                    case OFFLINE -> "status-offline";
+                });
+            }
         }
     }
 }
