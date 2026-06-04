@@ -18,8 +18,17 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ClientRegistry {
 
     private final ConcurrentHashMap<String, ClientHandler> clients = new ConcurrentHashMap<>();
-    /** Время последней активности ника (мс) — на его основе вычисляется AWAY. */
+    /**
+     * Время последней <em>пользовательской</em> активности ника (мс) — реальные
+     * сообщения (MESSAGE/TYPING). На его основе вычисляется AWAY. PING сюда НЕ
+     * входит, иначе heartbeat не давал бы уйти в AWAY.
+     */
     private final ConcurrentHashMap<String, Long> lastActivity = new ConcurrentHashMap<>();
+    /**
+     * Время последнего <em>любого</em> кадра от ника (мс), включая PING. На его
+     * основе «жнец» определяет мёртвые соединения.
+     */
+    private final ConcurrentHashMap<String, Long> lastSeen = new ConcurrentHashMap<>();
     /** Последний разосланный список — чтобы не слать USER_LIST, если ничего не изменилось. */
     private volatile String lastBroadcastList = "";
 
@@ -34,7 +43,9 @@ public class ClientRegistry {
     public boolean register(String nick, ClientHandler handler) {
         boolean ok = clients.putIfAbsent(nick, handler) == null;
         if (ok) {
-            lastActivity.put(nick, System.currentTimeMillis());
+            long now = System.currentTimeMillis();
+            lastActivity.put(nick, now);
+            lastSeen.put(nick, now);
         }
         return ok;
     }
@@ -43,13 +54,29 @@ public class ClientRegistry {
         if (nick != null) {
             clients.remove(nick);
             lastActivity.remove(nick);
+            lastSeen.remove(nick);
         }
     }
 
-    /** Отмечает активность ника (сбрасывает таймер AWAY). */
-    public void touch(String nick) {
+    /**
+     * Реальная активность пользователя (MESSAGE/TYPING): сбрасывает таймер AWAY
+     * и одновременно подтверждает живость соединения.
+     */
+    public void recordActivity(String nick) {
         if (nick != null) {
-            lastActivity.put(nick, System.currentTimeMillis());
+            long now = System.currentTimeMillis();
+            lastActivity.put(nick, now);
+            lastSeen.put(nick, now);
+        }
+    }
+
+    /**
+     * Heartbeat (PING): подтверждает только живость соединения, но НЕ считается
+     * активностью — пользователь может оставаться AWAY, пока шлёт пинги.
+     */
+    public void recordHeartbeat(String nick) {
+        if (nick != null) {
+            lastSeen.put(nick, System.currentTimeMillis());
         }
     }
 
@@ -123,6 +150,27 @@ public class ClientRegistry {
 
     public Set<String> nicks() {
         return clients.keySet();
+    }
+
+    /**
+     * «Жнец» мёртвых соединений: закрывает тех, от кого не было ни одного кадра
+     * (включая PING) дольше {@code deadAfterMs}. Само снятие с регистрации и
+     * рассылку USER_LEFT выполнит поток клиента в {@code finally} после того,
+     * как закрытый сокет разблокирует его чтение.
+     *
+     * @return сколько соединений признано мёртвыми и закрыто
+     */
+    public int reapStale(long deadAfterMs) {
+        long now = System.currentTimeMillis();
+        int reaped = 0;
+        for (var entry : clients.entrySet()) {
+            Long seen = lastSeen.get(entry.getKey());
+            if (seen != null && now - seen > deadAfterMs) {
+                entry.getValue().disconnectStale();
+                reaped++;
+            }
+        }
+        return reaped;
     }
 
     private void trySend(ClientHandler handler, Message message) {

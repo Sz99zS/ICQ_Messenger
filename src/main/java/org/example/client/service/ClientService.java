@@ -11,6 +11,9 @@ import java.io.IOException;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Фасад клиента — единственная точка, через которую GUI работает с сетью.
@@ -35,6 +38,12 @@ public class ClientService {
     private Thread readerThread;
     private volatile boolean running;
 
+    /** Фоновый heartbeat: шлёт PING, чтобы сервер видел живость соединения. */
+    private ScheduledExecutorService heartbeat;
+
+    /** Период отправки PING (мс). Сервер реапит при отсутствии кадров ~15с. */
+    private static final long PING_INTERVAL_MS = 5_000;
+
     public void setListener(ClientServiceListener listener) {
         this.listener = listener;
     }
@@ -53,12 +62,42 @@ public class ClientService {
         connection.send(Message.login(nick));
     }
 
-    /** Запускает фоновое чтение сообщений с сервера. */
+    /** Запускает фоновое чтение сообщений с сервера и heartbeat. */
     public void start() {
         running = true;
         readerThread = new Thread(this::readLoop, "icq-reader");
         readerThread.setDaemon(true);
         readerThread.start();
+        startHeartbeat();
+    }
+
+    /** Поднимает планировщик, который шлёт PING каждые {@link #PING_INTERVAL_MS}. */
+    private void startHeartbeat() {
+        heartbeat = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "icq-heartbeat");
+            t.setDaemon(true);
+            return t;
+        });
+        heartbeat.scheduleAtFixedRate(this::sendPing,
+                PING_INTERVAL_MS, PING_INTERVAL_MS, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Отправляет служебный PING. Если запись упала — сервер недоступен: сообщаем
+     * об ошибке и рвём соединение (так клиент узнаёт о «смерти» сервера быстрее,
+     * чем по зависшему чтению).
+     */
+    private void sendPing() {
+        if (connection == null || !running) {
+            return;
+        }
+        try {
+            connection.send(new Message(MessageType.PING, nick, null, null,
+                    System.currentTimeMillis()));
+        } catch (IOException e) {
+            notifyError("Сервер не отвечает");
+            disconnect();
+        }
     }
 
     /** Цикл чтения: выполняется в сетевом потоке, не в потоке JavaFX. */
@@ -154,9 +193,12 @@ public class ClientService {
         }
     }
 
-    /** Закрывает соединение и останавливает чтение. */
+    /** Закрывает соединение, останавливает чтение и heartbeat. */
     public void disconnect() {
         running = false;
+        if (heartbeat != null) {
+            heartbeat.shutdownNow();
+        }
         if (connection != null) {
             connection.close();
         }
