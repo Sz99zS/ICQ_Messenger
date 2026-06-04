@@ -43,7 +43,10 @@ public class ClientHandler implements Runnable {
                 if (msg.getType() == MessageType.PING) {
                     // Heartbeat: подтверждает живость, но активностью не считается
                     // (иначе клиент никогда не уходил бы в AWAY) и не маршрутизируется.
+                    // В ответ шлём PONG — так клиент видит, что сервер жив.
                     registry.recordHeartbeat(nick);
+                    connection.send(new Message(MessageType.PONG, "server", nick, null,
+                            System.currentTimeMillis()));
                     continue;
                 }
                 registry.recordActivity(nick);         // реальное сообщение = активность
