@@ -12,6 +12,7 @@ import javafx.scene.control.TextField;
 import javafx.util.Duration;
 import org.example.client.model.ChatMessage;
 import org.example.client.model.Contact;
+import org.example.client.model.Status;
 import org.example.client.model.UserPresence;
 import org.example.client.service.ClientService;
 import org.example.client.service.ClientServiceListener;
@@ -106,6 +107,22 @@ public class MainChatController implements ClientServiceListener {
     /** Возвращает (создавая при необходимости) историю диалога по ключу. */
     private ObservableList<ChatMessage> conversationFor(String key) {
         return conversations.computeIfAbsent(key, k -> FXCollections.observableArrayList());
+    }
+
+    /**
+     * ПР10: закрепляет собеседника в списке контактов, если его там ещё нет.
+     * Нужен, чтобы личный диалог не пропадал, когда собеседник оффлайн (нет в
+     * USER_LIST) — например, при проигрывании истории при входе. Новичок
+     * добавляется как OFFLINE; статус ему уточнит ближайший USER_LIST.
+     */
+    private void ensureContact(String partner) {
+        if (partner == null || partner.equals(nick) || Message.BROADCAST.equals(partner)
+                || contactsByNick.containsKey(partner)) {
+            return;
+        }
+        Contact c = new Contact(partner, Status.OFFLINE);
+        contactsByNick.put(partner, c);
+        contacts.add(c);
     }
 
     /** Переключение открытого диалога при выборе контакта в списке. */
@@ -208,6 +225,12 @@ public class MainChatController implements ClientServiceListener {
             // должны поднимать счётчик «непрочитано».
             boolean history = "1".equals(message.getAttributes().get("hist"));
 
+            // ПР10: личный диалог закрепляет собеседника в списке контактов
+            // сразу (в т.ч. при проигрывании истории с тем, кто сейчас оффлайн).
+            if (!message.isBroadcast()) {
+                ensureContact(key);
+            }
+
             ObservableList<ChatMessage> conv = conversationFor(key);
             conv.add(new ChatMessage(
                     message.getFrom(),
@@ -254,6 +277,23 @@ public class MainChatController implements ClientServiceListener {
                 }
                 c.setStatus(u.status());
                 contactsByNick.put(u.nick(), c);
+                contacts.add(c);
+            }
+            // ПР10: контакты с непустой историей остаются в списке даже когда
+            // собеседник оффлайн (его нет в USER_LIST) — иначе личный диалог
+            // исчезал бы при выходе собеседника. Счётчик непрочитанных при этом
+            // сохраняется (переиспользуем прежний Contact).
+            for (String key : conversations.keySet()) {
+                if (Message.BROADCAST.equals(key) || key.equals(nick)
+                        || contactsByNick.containsKey(key) || conversationFor(key).isEmpty()) {
+                    continue;
+                }
+                Contact c = previous.get(key);
+                if (c == null) {
+                    c = new Contact(key, Status.OFFLINE);
+                }
+                c.setStatus(Status.OFFLINE);
+                contactsByNick.put(key, c);
                 contacts.add(c);
             }
             // Восстанавливаем открытый диалог: тот же контакт, иначе общий чат.
