@@ -8,6 +8,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import org.example.server.store.AccountStore;
 import org.example.server.store.MessageStore;
 
 /**
@@ -28,6 +29,8 @@ public class ChatServer {
     private final ClientRegistry registry = new ClientRegistry();
     // Журнал переписки: переживает перезапуск сервера и отдаёт историю при входе.
     private final MessageStore store = new MessageStore();
+    // Учётные записи (ПР12): регистрация и проверка пароля при входе.
+    private final AccountStore accounts = new AccountStore();
     private final MessageRouter router = new MessageRouter(registry, store);
     // Поток на клиента: их число заранее неизвестно — берём кэширующий пул.
     private final ExecutorService pool = Executors.newCachedThreadPool();
@@ -65,7 +68,7 @@ public class ChatServer {
 
     private void acceptClient(Socket socket) {
         try {
-            ClientHandler handler = new ClientHandler(socket, registry, router, store);
+            ClientHandler handler = new ClientHandler(socket, registry, router, store, accounts);
             pool.submit(handler);
         } catch (IOException e) {
             System.out.println("[server] Не удалось принять клиента: " + e.getMessage());

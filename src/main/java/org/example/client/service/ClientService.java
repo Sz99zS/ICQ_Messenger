@@ -55,17 +55,73 @@ public class ClientService {
     }
 
     /**
-     * Открывает соединение и отправляет запрос на вход. Поток-читатель ещё не
-     * запущен (см. {@link #start}), поэтому ответ сервера буферизуется сокетом
-     * и не теряется, пока контроллер выставляет слушателя.
+     * Вход по паролю (ПР12). Открывает соединение, шлёт {@code LOGIN} и
+     * <b>блокирующе</b> ждёт вердикт сервера. Так неуспех (неверный пароль)
+     * оставляет пользователя на экране входа, а не бросает в чат.
+     *
+     * <p>Поток-читатель ещё не запущен (см. {@link #start}): хендшейк читает
+     * первый кадр сам, а последующие ({@code USER_LIST}, история) буферизуются
+     * тем же {@link Connection} и не теряются. При неуспехе соединение закрывается.
      *
      * @throws IOException если не удалось подключиться к серверу
      */
-    public void connect(String host, int port, String nick) throws IOException {
-        this.nick = nick;
+    public AuthResult login(String host, int port, String nick, String password)
+            throws IOException {
+        openConnection(host, port);
+        connection.send(Message.login(nick, password));
+        return awaitLogin(nick);
+    }
+
+    /**
+     * Регистрация новой учётки (ПР12) с последующим автоматическим входом по
+     * тому же соединению. При неуспехе регистрации вход не выполняется.
+     *
+     * @throws IOException если не удалось подключиться к серверу
+     */
+    public AuthResult register(String host, int port, String nick, String password)
+            throws IOException {
+        openConnection(host, port);
+        connection.send(Message.register(nick, password));
+        Message resp = connection.receive();
+        if (resp == null || resp.getType() != MessageType.REGISTER_OK) {
+            return failAndClose(resp, "Регистрация отклонена");
+        }
+        // Учётка создана — сразу входим по тому же соединению.
+        connection.send(Message.login(nick, password));
+        return awaitLogin(nick);
+    }
+
+    /** Открывает (пере)соединение к серверу, закрыв предыдущее, если оно было. */
+    private void openConnection(String host, int port) throws IOException {
+        closeQuietly();
         this.socket = new Socket(host, port);
         this.connection = new Connection(socket, ProtocolFactory.createCodec());
-        connection.send(Message.login(nick));
+    }
+
+    /** Блокирующе ждёт ответ на {@code LOGIN} и трактует его. */
+    private AuthResult awaitLogin(String nick) throws IOException {
+        Message resp = connection.receive();
+        if (resp != null && resp.getType() == MessageType.LOGIN_OK) {
+            this.nick = nick;
+            return AuthResult.success();
+        }
+        return failAndClose(resp, "Вход отклонён");
+    }
+
+    /** Закрывает соединение и формирует отказ с текстом из ответа сервера. */
+    private AuthResult failAndClose(Message resp, String fallback) {
+        String reason = resp == null ? "Сервер закрыл соединение" : resp.getBody();
+        closeQuietly();
+        return AuthResult.failure(reason != null && !reason.isBlank() ? reason : fallback);
+    }
+
+    /** Тихо закрывает текущее соединение/сокет (между попытками входа). */
+    private void closeQuietly() {
+        if (connection != null) {
+            connection.close();
+            connection = null;
+        }
+        socket = null;
     }
 
     /** Запускает фоновое чтение сообщений с сервера и heartbeat. */
