@@ -41,9 +41,14 @@ public final class Message {
         return new Message(MessageType.MESSAGE, from, to, body, System.currentTimeMillis());
     }
 
-    /** Удобная фабрика запроса на вход. */
-    public static Message login(String nick) {
-        return new Message(MessageType.LOGIN, nick, null, null, System.currentTimeMillis());
+    /** Удобная фабрика запроса на вход: ник в {@code from}, пароль в {@code body}. */
+    public static Message login(String nick, String password) {
+        return new Message(MessageType.LOGIN, nick, null, password, System.currentTimeMillis());
+    }
+
+    /** Удобная фабрика запроса на регистрацию: ник в {@code from}, пароль в {@code body}. */
+    public static Message register(String nick, String password) {
+        return new Message(MessageType.REGISTER, nick, null, password, System.currentTimeMillis());
     }
 
     public MessageType getType()           { return type; }

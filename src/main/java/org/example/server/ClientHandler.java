@@ -4,6 +4,7 @@ import org.example.net.Connection;
 import org.example.protocol.Message;
 import org.example.protocol.MessageType;
 import org.example.protocol.ProtocolFactory;
+import org.example.server.store.AccountStore;
 import org.example.server.store.MessageStore;
 
 import java.io.IOException;
@@ -26,14 +27,16 @@ public class ClientHandler implements Runnable {
     private final ClientRegistry registry;
     private final MessageRouter router;
     private final MessageStore store;
+    private final AccountStore accounts;
     private String nick;
 
     public ClientHandler(Socket socket, ClientRegistry registry, MessageRouter router,
-                         MessageStore store) throws IOException {
+                         MessageStore store, AccountStore accounts) throws IOException {
         this.connection = new Connection(socket, ProtocolFactory.createCodec());
         this.registry = registry;
         this.router = router;
         this.store = store;
+        this.accounts = accounts;
     }
 
     @Override
@@ -66,21 +69,64 @@ public class ClientHandler implements Runnable {
         }
     }
 
-    /** Обрабатывает вход: проверяет ник, регистрирует, рассылает события. */
+    /**
+     * Фаза аутентификации (ПР12): принимает кадры до успешного входа.
+     * {@code REGISTER} создаёт учётку и оставляет клиента на этой же фазе (нужно
+     * ещё войти), {@code LOGIN} проверяет пароль и при успехе открывает сессию.
+     * Любой другой тип до входа — нарушение протокола, рвём соединение.
+     */
     private boolean handleLogin() throws IOException {
-        Message first = connection.receive();
-        if (first == null || first.getType() != MessageType.LOGIN) {
-            return false;
+        Message msg;
+        while ((msg = connection.receive()) != null) {
+            switch (msg.getType()) {
+                case REGISTER -> handleRegister(msg);
+                case LOGIN -> {
+                    if (handleAuthenticatedLogin(msg)) {
+                        return true;
+                    }
+                    // неуспех уже отправлен клиенту — ждём следующую попытку
+                }
+                default -> {
+                    return false; // до входа других кадров быть не должно
+                }
+            }
         }
-        String requested = first.getFrom();
+        return false; // соединение закрылось, не дойдя до входа
+    }
+
+    /** Регистрирует новую учётку и сообщает клиенту результат. Сессию не открывает. */
+    private void handleRegister(Message msg) throws IOException {
+        String requested = msg.getFrom();
+        String error = accounts.register(requested, msg.getBody());
+        if (error == null) {
+            connection.send(new Message(MessageType.REGISTER_OK, "server", requested,
+                    null, System.currentTimeMillis()));
+        } else {
+            connection.send(new Message(MessageType.REGISTER_FAIL, "server", requested,
+                    error, System.currentTimeMillis()));
+        }
+    }
+
+    /**
+     * Проверяет пароль и, при успехе, регистрирует онлайн-присутствие, шлёт
+     * историю и анонсирует вход. Возвращает {@code true}, если сессия открыта.
+     */
+    private boolean handleAuthenticatedLogin(Message msg) throws IOException {
+        String requested = msg.getFrom();
         if (requested == null || requested.isBlank()) {
             connection.send(new Message(MessageType.LOGIN_FAIL, "server", null,
                     "Пустой ник", System.currentTimeMillis()));
             return false;
         }
+        // Универсальная формулировка: не раскрываем, существует ли ник (анти-перебор).
+        if (!accounts.verify(requested, msg.getBody())) {
+            connection.send(new Message(MessageType.LOGIN_FAIL, "server", requested,
+                    "Неверный ник или пароль", System.currentTimeMillis()));
+            return false;
+        }
         if (!registry.register(requested, this)) {
             connection.send(new Message(MessageType.LOGIN_FAIL, "server", requested,
-                    "Ник уже занят", System.currentTimeMillis()));
+                    "Этот пользователь уже в сети", System.currentTimeMillis()));
             return false;
         }
         this.nick = requested;
