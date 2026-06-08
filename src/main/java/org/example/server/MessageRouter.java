@@ -2,6 +2,7 @@ package org.example.server;
 
 import org.example.protocol.Message;
 import org.example.protocol.MessageType;
+import org.example.server.store.MessageStore;
 
 /**
  * Маршрутизатор сообщений: решает, кому доставить пришедшее от клиента
@@ -9,13 +10,20 @@ import org.example.protocol.MessageType;
  *
  * <p>Это реализация требования (c): собственная система обмена сообщениями
  * между клиентами через сервер.
+ *
+ * <p>На ПР9 каждое доставленное {@code MESSAGE} ещё и сохраняется в
+ * {@link MessageStore} — чтобы пережить перезапуск сервера и быть проигранным
+ * заново при следующем входе адресатов. Личное сообщение оффлайн-пользователю
+ * тоже сохраняется и придёт ему историей, когда он подключится.
  */
 public class MessageRouter {
 
     private final ClientRegistry registry;
+    private final MessageStore store;
 
-    public MessageRouter(ClientRegistry registry) {
+    public MessageRouter(ClientRegistry registry, MessageStore store) {
         this.registry = registry;
+        this.store = store;
     }
 
     /**
@@ -23,7 +31,11 @@ public class MessageRouter {
      */
     public void route(Message message, ClientHandler sender) {
         switch (message.getType()) {
-            case MESSAGE, TYPING -> deliver(message, sender);
+            case MESSAGE -> {
+                store.append(message);   // сперва фиксируем в журнале, затем доставляем
+                deliver(message, sender);
+            }
+            case TYPING -> deliver(message, sender);
             case PING -> { /* keep-alive: ничего не пересылаем */ }
             default -> System.out.println("[server] Игнорирую от " + sender.getNick()
                     + ": неподдерживаемый тип " + message.getType());

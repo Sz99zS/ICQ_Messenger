@@ -8,6 +8,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import org.example.server.store.MessageStore;
+
 /**
  * Серверная часть мессенджера ICQ.
  *
@@ -24,7 +26,9 @@ public class ChatServer {
 
     private final int port;
     private final ClientRegistry registry = new ClientRegistry();
-    private final MessageRouter router = new MessageRouter(registry);
+    // Журнал переписки: переживает перезапуск сервера и отдаёт историю при входе.
+    private final MessageStore store = new MessageStore();
+    private final MessageRouter router = new MessageRouter(registry, store);
     // Поток на клиента: их число заранее неизвестно — берём кэширующий пул.
     private final ExecutorService pool = Executors.newCachedThreadPool();
     // Периодически пересчитывает статусы (ONLINE/AWAY) и реапит мёртвые соединения.
@@ -61,7 +65,7 @@ public class ChatServer {
 
     private void acceptClient(Socket socket) {
         try {
-            ClientHandler handler = new ClientHandler(socket, registry, router);
+            ClientHandler handler = new ClientHandler(socket, registry, router, store);
             pool.submit(handler);
         } catch (IOException e) {
             System.out.println("[server] Не удалось принять клиента: " + e.getMessage());

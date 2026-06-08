@@ -18,7 +18,9 @@ import org.example.client.service.ClientServiceListener;
 import org.example.client.ui.ThemeManager;
 import org.example.protocol.Message;
 
+import java.time.Instant;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -196,19 +198,27 @@ public class MainChatController implements ClientServiceListener {
     @Override
     public void onMessage(Message message) {
         Platform.runLater(() -> {
-            // Broadcast → в общий чат, личка → в диалог с отправителем.
-            String key = message.isBroadcast() ? Message.BROADCAST : message.getFrom();
+            boolean mine = nick.equals(message.getFrom());
+            // Broadcast → общий чат; личка → диалог с собеседником (для своих же
+            // сообщений из истории собеседник — это адресат, а не отправитель).
+            String key = message.isBroadcast()
+                    ? Message.BROADCAST
+                    : (mine ? message.getTo() : message.getFrom());
+            // Метка истории (ПР9): такие сообщения проигрываются при входе и не
+            // должны поднимать счётчик «непрочитано».
+            boolean history = "1".equals(message.getAttributes().get("hist"));
+
             ObservableList<ChatMessage> conv = conversationFor(key);
             conv.add(new ChatMessage(
                     message.getFrom(),
                     message.getBody(),
-                    LocalTime.now().format(TIME_FMT),
-                    false));
+                    formatTime(message.getTimestamp()),
+                    mine));
 
             boolean isActive = activeContact != null && activeContact.getNick().equals(key);
             if (isActive) {
                 messageList.scrollTo(conv.size() - 1);
-            } else {
+            } else if (!history) {
                 Contact c = Message.BROADCAST.equals(key) ? broadcastContact : contactsByNick.get(key);
                 if (c != null) {
                     c.incrementUnread();
@@ -216,6 +226,14 @@ public class MainChatController implements ClientServiceListener {
                 }
             }
         });
+    }
+
+    /** Метка времени сообщения (epoch ms) → {@code HH:mm} в локальной зоне. */
+    private static String formatTime(long epochMillis) {
+        return Instant.ofEpochMilli(epochMillis)
+                .atZone(ZoneId.systemDefault())
+                .toLocalTime()
+                .format(TIME_FMT);
     }
 
     @Override
