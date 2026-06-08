@@ -4,6 +4,7 @@ import org.example.net.Connection;
 import org.example.protocol.Message;
 import org.example.protocol.MessageType;
 import org.example.protocol.ProtocolFactory;
+import org.example.server.store.MessageStore;
 
 import java.io.IOException;
 import java.net.Socket;
@@ -18,16 +19,21 @@ import java.net.Socket;
  */
 public class ClientHandler implements Runnable {
 
+    /** Атрибут-метка: сообщение из истории, а не «живое» (см. {@link #sendHistory()}). */
+    public static final String ATTR_HISTORY = "hist";
+
     private final Connection connection;
     private final ClientRegistry registry;
     private final MessageRouter router;
+    private final MessageStore store;
     private String nick;
 
-    public ClientHandler(Socket socket, ClientRegistry registry, MessageRouter router)
-            throws IOException {
+    public ClientHandler(Socket socket, ClientRegistry registry, MessageRouter router,
+                         MessageStore store) throws IOException {
         this.connection = new Connection(socket, ProtocolFactory.createCodec());
         this.registry = registry;
         this.router = router;
+        this.store = store;
     }
 
     @Override
@@ -85,10 +91,27 @@ public class ClientHandler implements Runnable {
         // Новичку — текущий список онлайн со статусами; остальным — что появился новый.
         connection.send(new Message(MessageType.USER_LIST, "server", nick,
                 registry.formatUserList(), System.currentTimeMillis()));
+        // История — до анонса о входе остальным, чтобы «живые» сообщения не
+        // вклинились в середину проигрываемой ленты.
+        sendHistory();
         registry.broadcast(new Message(MessageType.USER_JOINED, "server", null, nick,
                 System.currentTimeMillis()), nick);
         registry.broadcastUserList();
         return true;
+    }
+
+    /**
+     * Проигрывает вошедшему его историю (ПР9): общий чат плюс личные диалоги с
+     * его участием. Каждый кадр — обычный {@code MESSAGE} с меткой
+     * {@link #ATTR_HISTORY}, чтобы клиент отрисовал его без бейджа «непрочитано».
+     */
+    private void sendHistory() throws IOException {
+        for (Message past : store.historyFor(nick)) {
+            Message replay = new Message(past.getType(), past.getFrom(), past.getTo(),
+                    past.getBody(), past.getTimestamp());
+            replay.getAttributes().put(ATTR_HISTORY, "1");
+            connection.send(replay);
+        }
     }
 
     /**
