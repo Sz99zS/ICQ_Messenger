@@ -8,6 +8,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import org.example.net.Tls;
 import org.example.server.store.AccountStore;
 import org.example.server.store.FileStore;
 import org.example.server.store.MessageStore;
@@ -65,8 +66,9 @@ public class ChatServer {
         // Раз в 5с «жнём» мёртвые соединения (нет кадров/PING дольше DEAD_AFTER_MS).
         statusTicker.scheduleAtFixedRate(() -> registry.reapStale(DEAD_AFTER_MS),
                 5, 5, TimeUnit.SECONDS);
-        try (ServerSocket serverSocket = new ServerSocket(port)) {
-            System.out.println("[server] Готов принимать подключения.");
+        // ПР18: слушаем по TLS — трафик (включая пароль при входе) шифруется.
+        try (ServerSocket serverSocket = Tls.newServerSocket(port)) {
+            System.out.println("[server] Готов принимать подключения (TLS).");
             while (true) {
                 Socket socket = serverSocket.accept();
                 acceptClient(socket);

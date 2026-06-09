@@ -3,6 +3,7 @@ package org.example.client.service;
 import org.example.client.model.Status;
 import org.example.client.model.UserPresence;
 import org.example.net.Connection;
+import org.example.net.Tls;
 import org.example.protocol.Message;
 import org.example.protocol.MessageType;
 import org.example.protocol.ProtocolFactory;
@@ -141,7 +142,9 @@ public class ClientService {
     /** Открывает (пере)соединение к серверу, закрыв предыдущее, если оно было. */
     private void openConnection(String host, int port) throws IOException {
         closeQuietly();
-        this.socket = new Socket(host, port);
+        // ПР18: соединяемся по TLS — канал шифруется, сервер подтверждает себя
+        // закреплённым сертификатом (см. org.example.net.Tls).
+        this.socket = Tls.newSocket(host, port);
         this.connection = new Connection(socket, ProtocolFactory.createCodec());
     }
 
