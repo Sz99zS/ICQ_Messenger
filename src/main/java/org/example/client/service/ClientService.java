@@ -46,6 +46,24 @@ public class ClientService {
     private Thread readerThread;
     private volatile boolean running;
 
+    // --- авто-реконнект (ПР17) ---
+    /** Параметры последнего успешного входа — чтобы переподключиться тем же. */
+    private String host;
+    private int port;
+    private String password;
+    /** Пользователь сам закрыл соединение → переподключаться не нужно. */
+    private volatile boolean userClosed;
+    /** Идёт ли сейчас цикл переподключения (чтобы не запускать второй). */
+    private final java.util.concurrent.atomic.AtomicBoolean reconnecting =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /** Стартовая пауза между попытками переподключения (мс). */
+    private static final long RECONNECT_BASE_MS = 1_000;
+    /** Потолок паузы между попытками (мс) — экспоненциальный backoff упирается в него. */
+    private static final long RECONNECT_MAX_MS = 5_000;
+    /** Максимум попыток переподключения, после чего сдаёмся окончательно. */
+    private static final int RECONNECT_MAX_ATTEMPTS = 30;
+
     /** Размер чанка при загрузке файла (сырые байты). */
     private static final int FILE_CHUNK_BYTES = 48 * 1024;
     /** Идущие сейчас скачивания: ref(fileId) → накопитель байтов (живёт в потоке-читателе). */
@@ -82,7 +100,11 @@ public class ClientService {
             throws IOException {
         openConnection(host, port);
         connection.send(Message.login(nick, password));
-        return awaitLogin(nick);
+        AuthResult result = awaitLogin(nick);
+        if (result.ok()) {
+            rememberCredentials(host, port, password);
+        }
+        return result;
     }
 
     /**
@@ -101,7 +123,19 @@ public class ClientService {
         }
         // Учётка создана — сразу входим по тому же соединению.
         connection.send(Message.login(nick, password));
-        return awaitLogin(nick);
+        AuthResult result = awaitLogin(nick);
+        if (result.ok()) {
+            rememberCredentials(host, port, password);
+        }
+        return result;
+    }
+
+    /** Сохраняет параметры входа для будущих авто-переподключений (ПР17). */
+    private void rememberCredentials(String host, int port, String password) {
+        this.host = host;
+        this.port = port;
+        this.password = password;
+        this.userClosed = false;
     }
 
     /** Открывает (пере)соединение к серверу, закрыв предыдущее, если оно было. */
@@ -139,11 +173,17 @@ public class ClientService {
 
     /** Запускает фоновое чтение сообщений с сервера и heartbeat. */
     public void start() {
+        userClosed = false;
+        startReader();
+        startHeartbeat();
+    }
+
+    /** Поднимает поток-читатель на текущем соединении. */
+    private void startReader() {
         running = true;
         readerThread = new Thread(this::readLoop, "icq-reader");
         readerThread.setDaemon(true);
         readerThread.start();
-        startHeartbeat();
     }
 
     /** Поднимает планировщик, который шлёт PING каждые {@link #PING_INTERVAL_MS}. */
@@ -156,6 +196,14 @@ public class ClientService {
         });
         heartbeat.scheduleAtFixedRate(this::heartbeatTick,
                 PING_INTERVAL_MS, PING_INTERVAL_MS, TimeUnit.MILLISECONDS);
+    }
+
+    /** Останавливает планировщик heartbeat (между переподключениями и при закрытии). */
+    private void stopHeartbeat() {
+        if (heartbeat != null) {
+            heartbeat.shutdownNow();
+            heartbeat = null;
+        }
     }
 
     /**
@@ -171,16 +219,29 @@ public class ClientService {
             return;
         }
         if (System.currentTimeMillis() - lastPong > PONG_TIMEOUT_MS) {
-            notifyError("Сервер не отвечает");
-            disconnect();
+            loseConnection(); // нет PONG → роняем соединение, дальше попробуем переподключиться
             return;
         }
         try {
             connection.send(new Message(MessageType.PING, nick, null, null,
                     System.currentTimeMillis()));
         } catch (IOException e) {
-            notifyError("Сервер не отвечает");
-            disconnect();
+            loseConnection();
+        }
+    }
+
+    /**
+     * Фиксирует потерю соединения (ПР17): останавливает чтение и закрывает сокет.
+     * Закрытие разблокирует {@link #readLoop()}, чей {@code finally} решит, что
+     * делать дальше — переподключаться или завершиться (см. {@link #userClosed}).
+     */
+    private void loseConnection() {
+        if (!running) {
+            return; // уже теряли — не плодим повторов
+        }
+        running = false;
+        if (connection != null) {
+            connection.close();
         }
     }
 
@@ -192,14 +253,88 @@ public class ClientService {
                 dispatch(msg);
             }
         } catch (IOException e) {
-            if (running) {
-                notifyError("Соединение прервано: " + e.getMessage());
-            }
+            // Разрыв — это нормальный путь к переподключению, шум в UI не нужен.
         } finally {
             running = false;
-            if (listener != null) {
-                listener.onDisconnected();
+            stopHeartbeat();
+            if (userClosed) {
+                notifyDisconnected(); // пользователь сам вышел — это финал
+            } else {
+                reconnect(); // обрыв сети/сервера — пробуем восстановить
             }
+        }
+    }
+
+    /**
+     * Запускает (один) фоновый цикл переподключения (ПР17). Идемпотентен:
+     * повторные вызовы при гонке heartbeat/reader игнорируются.
+     */
+    private void reconnect() {
+        if (userClosed || !reconnecting.compareAndSet(false, true)) {
+            return;
+        }
+        if (listener != null) {
+            listener.onReconnecting();
+        }
+        Thread t = new Thread(this::reconnectLoop, "icq-reconnect");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /**
+     * Цикл восстановления связи с экспоненциальным backoff. Повторяет вход тем же
+     * ником/паролем, пока не получится. {@code LOGIN_FAIL} здесь почти всегда
+     * означает, что сервер ещё не «сжал» старую сессию («уже в сети») — это
+     * временно, поэтому тоже повторяем. После {@link #RECONNECT_MAX_ATTEMPTS}
+     * безуспешных попыток сдаёмся окончательно.
+     */
+    private void reconnectLoop() {
+        long delay = RECONNECT_BASE_MS;
+        for (int attempt = 1; attempt <= RECONNECT_MAX_ATTEMPTS && !userClosed; attempt++) {
+            sleep(delay);
+            if (userClosed) {
+                break;
+            }
+            try {
+                openConnection(host, port);
+                connection.send(Message.login(nick, password));
+                Message resp = connection.receive();
+                if (resp != null && resp.getType() == MessageType.LOGIN_OK) {
+                    reconnecting.set(false);
+                    startReader();   // буферизованные за LOGIN_OK кадры (история/списки) подхватит он
+                    startHeartbeat();
+                    if (listener != null) {
+                        listener.onReconnected();
+                    }
+                    return;
+                }
+                // LOGIN_FAIL (вероятно «уже в сети», пока не отработал реапер) — повторим.
+                closeQuietly();
+            } catch (IOException e) {
+                // Сервер ещё недоступен — следующая попытка.
+            }
+            delay = Math.min(delay * 2, RECONNECT_MAX_MS);
+        }
+        // Цикл закончился. Если это не пользовательское закрытие — значит исчерпали
+        // попытки: честно сообщаем о финальном обрыве.
+        reconnecting.set(false);
+        if (!userClosed) {
+            notifyError("Не удалось переподключиться к серверу");
+            notifyDisconnected();
+        }
+    }
+
+    private static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void notifyDisconnected() {
+        if (listener != null) {
+            listener.onDisconnected();
         }
     }
 
@@ -435,12 +570,14 @@ public class ClientService {
         }
     }
 
-    /** Закрывает соединение, останавливает чтение и heartbeat. */
+    /**
+     * Пользовательское закрытие соединения: останавливает чтение, heartbeat и
+     * <b>отменяет</b> авто-переподключение (ПР17) — в отличие от сетевого обрыва.
+     */
     public void disconnect() {
+        userClosed = true;
         running = false;
-        if (heartbeat != null) {
-            heartbeat.shutdownNow();
-        }
+        stopHeartbeat();
         if (connection != null) {
             connection.close();
         }

@@ -68,6 +68,12 @@ public class MainChatController implements ClientServiceListener {
     private final Map<String, ObservableList<ChatMessage>> conversations = new HashMap<>();
     /** Свои исходящие личные пузыри по id — чтобы обновлять галочку по квитанции (ПР14). */
     private final Map<String, ChatMessage> outgoingById = new HashMap<>();
+    /**
+     * id всех уже показанных сообщений (ПР17). Сервер при каждом входе заново
+     * проигрывает историю, поэтому после авто-переподключения те же сообщения
+     * приходят повторно — по id отбрасываем дубли, чтобы лента не задваивалась.
+     */
+    private final Set<String> seenMessageIds = new HashSet<>();
     /** Счётчик для клиентских id исходящих сообщений (ник делает их уникальными в сети). */
     private int messageCounter;
     /** Файловые пузыри по серверному fileId — для подстановки скачанных байтов (ПР15). */
@@ -273,9 +279,17 @@ public class MainChatController implements ClientServiceListener {
         if (text.isEmpty()) {
             return;
         }
+        if (!service.isConnected()) {
+            titleLabel.setText("Нет связи с сервером — сообщение не отправлено");
+            return;
+        }
         boolean personal = isPersonalTarget();
         String target = currentTarget();
-        String id = personal ? nextMessageId() : null;
+        // ПР17: id выдаём всегда (и бродкасту/комнате тоже) и запоминаем — тогда
+        // при повторном проигрывании истории после реконнекта свои же сообщения
+        // распознаются как дубли и не задваиваются.
+        String id = nextMessageId();
+        seenMessageIds.add(id);
         // Своё сообщение сразу в ленту текущего диалога (справа). Личное стартует
         // со статусом «ждёт доставки» (⏳) — квитанции обновят галочку (ПР14).
         // Общий чат и комнаты — без галочек (как и раньше бродкаст).
@@ -283,7 +297,7 @@ public class MainChatController implements ClientServiceListener {
                 ? new ChatMessage(id, nick, text, LocalTime.now().format(TIME_FMT), true,
                         true, DeliveryStatus.PENDING)
                 : new ChatMessage(nick, text, LocalTime.now().format(TIME_FMT), true);
-        if (id != null) {
+        if (personal) {
             outgoingById.put(id, own);
         }
         ObservableList<ChatMessage> conv = conversationFor(target);
@@ -310,9 +324,16 @@ public class MainChatController implements ClientServiceListener {
             titleLabel.setText("Файл больше 10 МБ — не отправлен");
             return;
         }
+        if (!service.isConnected()) {
+            titleLabel.setText("Нет связи с сервером — файл не отправлен");
+            return;
+        }
         boolean personal = isPersonalTarget();
         String target = currentTarget();
+        // ref = id сообщения-ссылки на сервере (см. handleFileEnd) — помним для
+        // дедупа при повторном проигрывании истории после реконнекта (ПР17).
         String ref = nextMessageId();
+        seenMessageIds.add(ref);
         // Локальный пузырь сразу: у отправителя превью берётся из самого файла,
         // личный — со статусом «ждёт доставки» (галочки из ПР14). Комната/общий
         // чат — без галочек.
@@ -393,6 +414,19 @@ public class MainChatController implements ClientServiceListener {
     @Override
     public void onMessage(Message message) {
         Platform.runLater(() -> {
+            // ПР17: дубль из повторного проигрывания истории после реконнекта — пропускаем.
+            String msgId = message.getAttributes().get("id");
+            if (msgId != null && !seenMessageIds.add(msgId)) {
+                // Но галочку своего личного пузыря освежим: статус мог измениться,
+                // пока мы были офлайн (доставлено/прочитано). READ обратно не катим.
+                ChatMessage existing = outgoingById.get(msgId);
+                String st = message.getAttributes().get("st");
+                if (existing != null && st != null && existing.getStatus() != DeliveryStatus.READ) {
+                    existing.setStatus(parseStatus(st));
+                    messageList.refresh();
+                }
+                return;
+            }
             boolean mine = nick.equals(message.getFrom());
             // Broadcast → общий чат; комната → её лента «#имя»; личка → диалог с
             // собеседником (для своих же сообщений из истории собеседник — адресат).
@@ -725,6 +759,18 @@ public class MainChatController implements ClientServiceListener {
         String who = String.join(", ", typingNicks);
         typingLabel.setText(who + (typingNicks.size() == 1 ? " печатает…" : " печатают…"));
         typingLabel.setVisible(true);
+    }
+
+    @Override
+    public void onReconnecting() {
+        Platform.runLater(() -> titleLabel.setText("⟳ Связь потеряна — переподключение…"));
+    }
+
+    @Override
+    public void onReconnected() {
+        // Связь восстановлена: сервер заново пришлёт списки/историю (дубли отсеет
+        // seenMessageIds), а заголовок возвращаем к обычному виду текущего диалога.
+        Platform.runLater(this::updateTitle);
     }
 
     @Override
