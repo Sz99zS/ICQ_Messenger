@@ -108,6 +108,9 @@ public class LoginController {
             // Переиспользуем сцену — тема (CSS) сохраняется.
             stage.getScene().setRoot(root);
             stage.setTitle("ICQ Messenger — " + nick);
+            // Окно входа компактное — расширяем под чат (берём pref-размер разметки).
+            stage.sizeToScene();
+            stage.centerOnScreen();
 
             // Слушатель готов — можно начинать читать сообщения с сервера.
             service.start();

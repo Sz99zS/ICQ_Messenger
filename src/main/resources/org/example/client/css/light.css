@@ -1,4 +1,4 @@
-/* Светлая тема ICQ Messenger (ПР2). Весь "вайб" — здесь, без правок кода. */
+/* Светлая тема ICQ Messenger. Весь "вайб" — здесь, без правок кода. */
 
 .root {
     -fx-font-family: "Segoe UI", system-ui, sans-serif;
@@ -6,8 +6,23 @@
 }
 
 /* ---- Экран входа ---- */
-.login-root { -fx-background-color: #ffffff; }
-.login-title { -fx-font-size: 26px; -fx-font-weight: bold; -fx-text-fill: #ff8a00; }
+.login-root { -fx-background-color: #eef1f6; }
+.login-card {
+    -fx-background-color: #ffffff;
+    -fx-background-radius: 18;
+    -fx-padding: 28 32 26 32;
+    -fx-effect: dropshadow(gaussian, rgba(17,24,39,0.18), 24, 0, 0, 8);
+}
+.login-logo {
+    -fx-min-width: 72; -fx-min-height: 72; -fx-max-width: 72; -fx-max-height: 72;
+    -fx-background-color: linear-gradient(to bottom right, #ffa733, #ff7a00);
+    -fx-background-radius: 20;
+    -fx-text-fill: white;
+    -fx-font-size: 22px; -fx-font-weight: bold;
+    -fx-alignment: center;
+    -fx-effect: dropshadow(gaussian, rgba(255,138,0,0.45), 16, 0, 0, 4);
+}
+.login-title { -fx-font-size: 24px; -fx-font-weight: bold; -fx-text-fill: #111827; }
 .login-subtitle { -fx-font-size: 13px; -fx-text-fill: #6b7280; }
 .status-label { -fx-text-fill: #d12f2f; -fx-font-size: 12px; }
 
@@ -17,6 +32,7 @@
     -fx-text-fill: white;
     -fx-font-weight: bold;
     -fx-background-radius: 8;
+    -fx-padding: 8 18 8 18;
     -fx-cursor: hand;
 }
 .primary-button:hover { -fx-background-color: #ff9e2c; }
@@ -26,50 +42,90 @@
     -fx-border-color: #d1d5db;
     -fx-border-radius: 8;
     -fx-background-radius: 8;
+    -fx-padding: 6 12 6 12;
     -fx-cursor: hand;
 }
+.ghost-button:hover { -fx-background-color: #eef1f6; }
 
 /* ---- Верхняя панель ---- */
 .top-bar { -fx-background-color: #ffffff; -fx-border-color: transparent transparent #e5e7eb transparent; }
 .top-title { -fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: #111827; }
 
 /* ---- Списки ---- */
-.contact-list, .message-list { -fx-background-color: transparent; -fx-border-color: transparent; }
-.message-list .list-cell { -fx-background-color: transparent; -fx-padding: 2 6 2 6; }
-.contact-list .list-cell { -fx-background-color: transparent; -fx-padding: 8 10 8 10; -fx-text-fill: #1f2937; }
-.contact-list .list-cell:filled:hover { -fx-background-color: #e8eaed; }
+.contact-list { -fx-background-color: #f7f8fa; -fx-border-color: transparent #e5e7eb transparent transparent; }
+.message-list { -fx-background-color: transparent; -fx-border-color: transparent; }
+.message-list .list-cell { -fx-background-color: transparent; -fx-padding: 0; }
+.message-list .list-cell:filled:selected { -fx-background-color: transparent; }
+.contact-list .list-cell {
+    -fx-background-color: transparent;
+    -fx-padding: 7 10 7 10;
+    -fx-background-radius: 10;
+}
+.contact-list .list-cell:filled:hover { -fx-background-color: #e8eaed; -fx-background-radius: 10; }
+.contact-list .list-cell:filled:selected { -fx-background-color: #ffe9cc; -fx-background-radius: 10; }
+.contact-name { -fx-text-fill: #1f2937; -fx-font-size: 13px; }
+.list-cell:selected .contact-name { -fx-font-weight: bold; }
+.contact-broadcast .contact-name, .contact-room .contact-name { -fx-font-weight: bold; }
+.contact-offline { -fx-opacity: 0.6; }
+
+/* Бейдж непрочитанных */
+.unread-badge {
+    -fx-background-color: #ff8a00;
+    -fx-text-fill: white;
+    -fx-font-size: 11px; -fx-font-weight: bold;
+    -fx-background-radius: 10;
+    -fx-padding: 1 7 1 7;
+    -fx-min-width: 18; -fx-alignment: center;
+}
+
+/* Заглушка пустого списка */
+.list-placeholder { -fx-text-fill: #9ca3af; -fx-font-size: 13px; -fx-text-alignment: center; }
 
 /* ---- Пузыри сообщений ---- */
+.bubble-sender { -fx-font-size: 11px; -fx-font-weight: bold; -fx-padding: 0 0 0 2; }
 .bubble-mine {
     -fx-background-color: #ff8a00;
     -fx-text-fill: white;
     -fx-padding: 8 12 8 12;
-    -fx-background-radius: 14 14 2 14;
+    -fx-background-radius: 16 16 4 16;
+    -fx-effect: dropshadow(gaussian, rgba(255,138,0,0.25), 6, 0, 0, 1);
 }
 .bubble-other {
     -fx-background-color: #ffffff;
     -fx-text-fill: #111827;
     -fx-padding: 8 12 8 12;
-    -fx-background-radius: 14 14 14 2;
-    -fx-border-color: #e5e7eb;
-    -fx-border-radius: 14 14 14 2;
+    -fx-background-radius: 16 16 16 4;
+    -fx-effect: dropshadow(gaussian, rgba(17,24,39,0.10), 6, 0, 0, 1);
 }
 .bubble-meta { -fx-font-size: 10px; -fx-text-fill: #9ca3af; }
 
-/* ---- Индикаторы статуса контакта ---- */
-.status-online  { -fx-border-color: transparent transparent transparent #22c55e; -fx-border-width: 0 0 0 3; }
-.status-away    { -fx-border-color: transparent transparent transparent #f59e0b; -fx-border-width: 0 0 0 3; }
-.status-offline { -fx-border-color: transparent transparent transparent #9ca3af; -fx-border-width: 0 0 0 3; -fx-opacity: 0.6; }
-.contact-broadcast { -fx-border-color: transparent transparent transparent #6366f1; -fx-border-width: 0 0 0 3; -fx-font-weight: bold; }
-.contact-room { -fx-border-color: transparent transparent transparent #0ea5e9; -fx-border-width: 0 0 0 3; -fx-font-weight: bold; }
+/* Разделитель по датам */
+.date-separator {
+    -fx-background-color: #e5e7eb;
+    -fx-text-fill: #6b7280;
+    -fx-font-size: 11px;
+    -fx-background-radius: 10;
+    -fx-padding: 2 10 2 10;
+}
 
 /* ---- Поля ввода ---- */
 .text-field {
-    -fx-background-radius: 8;
-    -fx-border-radius: 8;
+    -fx-background-radius: 10;
+    -fx-border-radius: 10;
     -fx-border-color: #d1d5db;
-    -fx-padding: 8;
+    -fx-padding: 9;
 }
+.text-field:focused { -fx-border-color: #ff8a00; }
 .input-bar { -fx-background-color: #ffffff; }
 .input-area { -fx-background-color: #ffffff; }
 .typing-label { -fx-text-fill: #6b7280; -fx-font-style: italic; -fx-font-size: 11; }
+
+/* ---- Скроллбары ---- */
+.scroll-bar:vertical, .scroll-bar:horizontal { -fx-background-color: transparent; }
+.scroll-bar:vertical .track, .scroll-bar:horizontal .track { -fx-background-color: transparent; }
+.scroll-bar .thumb { -fx-background-color: #cbd0d8; -fx-background-radius: 8; }
+.scroll-bar .thumb:hover { -fx-background-color: #aab0ba; }
+.scroll-bar .increment-button, .scroll-bar .decrement-button,
+.scroll-bar .increment-arrow, .scroll-bar .decrement-arrow {
+    -fx-background-color: transparent; -fx-padding: 0; -fx-shape: " ";
+}

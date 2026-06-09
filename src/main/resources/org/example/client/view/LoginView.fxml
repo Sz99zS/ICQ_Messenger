@@ -11,22 +11,28 @@
 <VBox xmlns="http://javafx.com/javafx"
       xmlns:fx="http://javafx.com/fxml"
       fx:controller="org.example.client.controller.LoginController"
-      spacing="10" alignment="CENTER" styleClass="login-root">
+      alignment="CENTER" styleClass="login-root">
     <padding>
-        <Insets top="30" right="40" bottom="30" left="40"/>
+        <Insets top="24" right="24" bottom="24" left="24"/>
     </padding>
 
-    <Label text="ICQ Messenger" styleClass="login-title"/>
-    <Label text="Подключение к серверу" styleClass="login-subtitle"/>
+    <VBox spacing="12" alignment="CENTER" styleClass="login-card" maxWidth="320">
+        <Label text="ICQ" styleClass="login-logo"/>
+        <Label text="ICQ Messenger" styleClass="login-title"/>
+        <Label text="Войдите или зарегистрируйтесь" styleClass="login-subtitle"/>
 
-    <TextField fx:id="hostField" text="127.0.0.1" promptText="Адрес сервера"/>
-    <TextField fx:id="portField" text="12345" promptText="Порт"/>
-    <TextField fx:id="nickField" promptText="Ваш ник"/>
-    <PasswordField fx:id="passwordField" promptText="Пароль"/>
+        <VBox spacing="8" fillWidth="true">
+            <padding><Insets top="8" right="0" bottom="0" left="0"/></padding>
+            <TextField fx:id="hostField" text="127.0.0.1" promptText="Адрес сервера"/>
+            <TextField fx:id="portField" text="12345" promptText="Порт"/>
+            <TextField fx:id="nickField" promptText="Ваш ник"/>
+            <PasswordField fx:id="passwordField" promptText="Пароль"/>
+        </VBox>
 
-    <HBox spacing="10" alignment="CENTER">
-        <Button text="Войти" onAction="#onConnect" defaultButton="true" styleClass="primary-button"/>
-        <Button text="Регистрация" onAction="#onRegister" styleClass="primary-button"/>
-    </HBox>
-    <Label fx:id="statusLabel" styleClass="status-label"/>
+        <HBox spacing="10" alignment="CENTER">
+            <Button text="Войти" onAction="#onConnect" defaultButton="true" styleClass="primary-button"/>
+            <Button text="Регистрация" onAction="#onRegister" styleClass="primary-button"/>
+        </HBox>
+        <Label fx:id="statusLabel" styleClass="status-label" wrapText="true"/>
+    </VBox>
 </VBox>

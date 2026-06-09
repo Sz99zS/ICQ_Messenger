@@ -13,7 +13,7 @@
 <BorderPane xmlns="http://javafx.com/javafx"
             xmlns:fx="http://javafx.com/fxml"
             fx:controller="org.example.client.controller.MainChatController"
-            prefWidth="640" prefHeight="460" styleClass="chat-root">
+            prefWidth="720" prefHeight="520" styleClass="chat-root">
 
     <top>
         <HBox spacing="10" alignment="CENTER_LEFT" styleClass="top-bar">
@@ -26,7 +26,7 @@
     </top>
 
     <left>
-        <ListView fx:id="contactList" prefWidth="170" styleClass="contact-list"/>
+        <ListView fx:id="contactList" prefWidth="210" styleClass="contact-list"/>
     </left>
 
     <center>

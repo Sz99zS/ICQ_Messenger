@@ -12,6 +12,11 @@ import javafx.scene.control.ListView;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TextInputDialog;
+import javafx.scene.Node;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.paint.Color;
 import javafx.stage.FileChooser;
 import javafx.util.Duration;
 import org.example.client.model.ChatMessage;
@@ -21,6 +26,7 @@ import org.example.client.model.Status;
 import org.example.client.model.UserPresence;
 import org.example.client.service.ClientService;
 import org.example.client.service.ClientServiceListener;
+import org.example.client.ui.Avatars;
 import org.example.client.ui.ThemeManager;
 import org.example.protocol.Message;
 
@@ -135,6 +141,9 @@ public class MainChatController implements ClientServiceListener {
         titleLabel.setText("Вы вошли как: " + nick);
 
         messageList.setCellFactory(lv -> new ChatBubbleCell(this));
+        Label emptyChat = new Label("Здесь пока пусто.\nНапишите первым 👋");
+        emptyChat.getStyleClass().add("list-placeholder");
+        messageList.setPlaceholder(emptyChat);
 
         contactList.setItems(contacts);
         contactList.setCellFactory(lv -> new ContactCell(this));
@@ -305,10 +314,11 @@ public class MainChatController implements ClientServiceListener {
         // Своё сообщение сразу в ленту текущего диалога (справа). Личное стартует
         // со статусом «ждёт доставки» (⏳) — квитанции обновят галочку (ПР14).
         // Общий чат и комнаты — без галочек (как и раньше бродкаст).
+        long now = System.currentTimeMillis();
         ChatMessage own = personal
-                ? new ChatMessage(id, nick, text, LocalTime.now().format(TIME_FMT), true,
+                ? new ChatMessage(id, nick, text, LocalTime.now().format(TIME_FMT), now, true,
                         true, DeliveryStatus.PENDING)
-                : new ChatMessage(nick, text, LocalTime.now().format(TIME_FMT), true);
+                : new ChatMessage(nick, text, LocalTime.now().format(TIME_FMT), now, true);
         if (personal) {
             outgoingById.put(id, own);
         }
@@ -350,7 +360,7 @@ public class MainChatController implements ClientServiceListener {
         // личный — со статусом «ждёт доставки» (галочки из ПР14). Комната/общий
         // чат — без галочек.
         ChatMessage bubble = ChatMessage.fileMessage(personal ? ref : null, nick,
-                LocalTime.now().format(TIME_FMT), true, personal,
+                LocalTime.now().format(TIME_FMT), System.currentTimeMillis(), true, personal,
                 personal ? DeliveryStatus.PENDING : null, file.getName(), file.length(),
                 null, null, file);
         if (personal) {
@@ -499,20 +509,21 @@ public class MainChatController implements ClientServiceListener {
      */
     private ChatMessage toChatMessage(Message message, boolean mine) {
         String time = formatTime(message.getTimestamp());
+        long ts = message.getTimestamp();
         boolean privateChat = mine && !message.isBroadcast() && !message.isRoom();
         // ПР15: сообщение-ссылка на файл (атрибут file=1) → файловый пузырь.
         if ("1".equals(message.getAttributes().get("file"))) {
             DeliveryStatus st = privateChat ? parseStatus(message.getAttributes().get("st")) : null;
             return ChatMessage.fileMessage(message.getAttributes().get("id"), message.getFrom(),
-                    time, mine, privateChat, st, message.getAttributes().get("name"),
+                    time, ts, mine, privateChat, st, message.getAttributes().get("name"),
                     parseLong(message.getAttributes().get("size")), message.getAttributes().get("mime"),
                     message.getAttributes().get("fileId"), null);
         }
         if (privateChat) {
             return new ChatMessage(message.getAttributes().get("id"), message.getFrom(),
-                    message.getBody(), time, true, true, parseStatus(message.getAttributes().get("st")));
+                    message.getBody(), time, ts, true, true, parseStatus(message.getAttributes().get("st")));
         }
-        return new ChatMessage(message.getFrom(), message.getBody(), time, mine);
+        return new ChatMessage(message.getFrom(), message.getBody(), time, ts, mine);
     }
 
     private static long parseLong(String s) {
@@ -814,38 +825,59 @@ public class MainChatController implements ClientServiceListener {
         @Override
         protected void updateItem(Contact item, boolean empty) {
             super.updateItem(item, empty);
-            getStyleClass().removeAll("status-online", "status-away", "status-offline",
-                    "contact-broadcast", "contact-room");
+            getStyleClass().removeAll("contact-broadcast", "contact-room", "contact-offline");
             if (empty || item == null) {
                 setText(null);
+                setGraphic(null);
                 setContextMenu(null);
                 return;
             }
-            String label;
-            if (item.isBroadcast()) {
-                label = "# Общий чат";
-            } else if (item.isRoom()) {
-                // nick = «#имя» → показываем «# имя».
-                label = "# " + item.getNick().substring(Message.ROOM_PREFIX.length());
-            } else {
-                label = item.getNick();
-            }
-            if (item.getUnread() > 0) {
-                label += "  (" + item.getUnread() + ")";
-            }
-            setText(label);
+            setText(null);
             setContextMenu(item.isRoom() ? roomMenu : null);
+
+            double size = 30;
+            Node avatar;
+            String name;
             if (item.isBroadcast()) {
+                avatar = Avatars.glyph("#", Color.web("#6366f1"), size);
+                name = "Общий чат";
                 getStyleClass().add("contact-broadcast");
             } else if (item.isRoom()) {
+                avatar = Avatars.circle(item.getNick(), size); // цвет по имени, инициал «#»
+                name = item.getNick().substring(Message.ROOM_PREFIX.length());
                 getStyleClass().add("contact-room");
             } else {
-                getStyleClass().add(switch (item.getStatus()) {
-                    case ONLINE -> "status-online";
-                    case AWAY -> "status-away";
-                    case OFFLINE -> "status-offline";
-                });
+                avatar = Avatars.circle(item.getNick(), size, statusColor(item.getStatus()));
+                name = item.getNick();
+                if (item.getStatus() == Status.OFFLINE) {
+                    getStyleClass().add("contact-offline");
+                }
             }
+
+            Label nameLabel = new Label(name);
+            nameLabel.getStyleClass().add("contact-name");
+
+            Region grow = new Region();
+            HBox.setHgrow(grow, Priority.ALWAYS);
+
+            HBox row = new HBox(10, avatar, nameLabel, grow);
+            row.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+
+            if (item.getUnread() > 0) {
+                Label badge = new Label(Integer.toString(item.getUnread()));
+                badge.getStyleClass().add("unread-badge");
+                row.getChildren().add(badge);
+            }
+            setGraphic(row);
+        }
+
+        /** Цвет точки-присутствия для аватара. */
+        private static Color statusColor(Status status) {
+            return switch (status) {
+                case ONLINE -> Color.web("#22c55e");
+                case AWAY -> Color.web("#f59e0b");
+                case OFFLINE -> Color.web("#9ca3af");
+            };
         }
     }
 }
