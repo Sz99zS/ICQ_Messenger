@@ -13,6 +13,7 @@ import org.example.server.store.FileStore;
 import org.example.server.store.MessageStore;
 import org.example.server.store.OfflineStore;
 import org.example.server.store.ReadReceiptStore;
+import org.example.server.store.RoomStore;
 
 /**
  * Серверная часть мессенджера ICQ.
@@ -40,8 +41,10 @@ public class ChatServer {
     private final ReadReceiptStore readReceipts = new ReadReceiptStore();
     // Хранилище переданных файлов (ПР15): байты на диске + индекс метаданных.
     private final FileStore files = new FileStore();
+    // Реестр групповых комнат (ПР16): состав комнат, переживает перезапуск.
+    private final RoomStore rooms = new RoomStore();
     private final MessageRouter router =
-            new MessageRouter(registry, store, accounts, offline, readReceipts);
+            new MessageRouter(registry, store, accounts, offline, readReceipts, rooms);
     // Поток на клиента: их число заранее неизвестно — берём кэширующий пул.
     private final ExecutorService pool = Executors.newCachedThreadPool();
     // Периодически пересчитывает статусы (ONLINE/AWAY) и реапит мёртвые соединения.
@@ -79,7 +82,7 @@ public class ChatServer {
     private void acceptClient(Socket socket) {
         try {
             ClientHandler handler = new ClientHandler(socket, registry, router, store, accounts,
-                    offline, readReceipts, files);
+                    offline, readReceipts, files, rooms);
             pool.submit(handler);
         } catch (IOException e) {
             System.out.println("[server] Не удалось принять клиента: " + e.getMessage());

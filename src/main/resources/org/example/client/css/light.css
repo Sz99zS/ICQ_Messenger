@@ -61,6 +61,7 @@
 .status-away    { -fx-border-color: transparent transparent transparent #f59e0b; -fx-border-width: 0 0 0 3; }
 .status-offline { -fx-border-color: transparent transparent transparent #9ca3af; -fx-border-width: 0 0 0 3; -fx-opacity: 0.6; }
 .contact-broadcast { -fx-border-color: transparent transparent transparent #6366f1; -fx-border-width: 0 0 0 3; -fx-font-weight: bold; }
+.contact-room { -fx-border-color: transparent transparent transparent #0ea5e9; -fx-border-width: 0 0 0 3; -fx-font-weight: bold; }
 
 /* ---- Поля ввода ---- */
 .text-field {

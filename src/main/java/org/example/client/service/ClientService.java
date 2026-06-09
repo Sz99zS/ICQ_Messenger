@@ -221,6 +221,8 @@ public class ClientService {
             case FILE_CHUNK -> appendDownload(msg);
             case FILE_END -> finishDownload(msg);
             case USER_LIST -> listener.onUserListChanged(parsePresence(msg.getBody()));
+            case ROOM_LIST -> listener.onRoomList(parseCsv(msg.getBody()));
+            case ROOM_MEMBERS -> listener.onRoomMembers(msg.getTo(), parseCsv(msg.getBody()));
             case TYPING -> listener.onTyping(msg.getFrom(), "1".equals(msg.getBody()));
             case USER_JOINED, USER_LEFT -> { /* список придёт отдельным USER_LIST */ }
             case PONG -> lastPong = System.currentTimeMillis(); // сервер жив
@@ -252,6 +254,46 @@ public class ClientService {
             users.add(new UserPresence(nick, status));
         }
         return users;
+    }
+
+    /** Разбирает список ников/комнат, разделённых запятыми (пустой → пустой список). */
+    private static List<String> parseCsv(String body) {
+        if (body == null || body.isBlank()) {
+            return List.of();
+        }
+        List<String> items = new ArrayList<>();
+        for (String token : body.split(",")) {
+            if (!token.isBlank()) {
+                items.add(token);
+            }
+        }
+        return items;
+    }
+
+    /** Войти в комнату {@code room} (создаётся на сервере, если её ещё нет) — ПР16. */
+    public void joinRoom(String room) {
+        sendRoomControl(MessageType.ROOM_JOIN, room);
+    }
+
+    /** Покинуть комнату {@code room} (ПР16). */
+    public void leaveRoom(String room) {
+        sendRoomControl(MessageType.ROOM_LEAVE, room);
+    }
+
+    /** Запросить у сервера список существующих комнат (ПР16). */
+    public void requestRoomList() {
+        sendRoomControl(MessageType.ROOM_LIST, null);
+    }
+
+    private void sendRoomControl(MessageType type, String room) {
+        if (connection == null || !running) {
+            return;
+        }
+        try {
+            connection.send(new Message(type, nick, room, null, System.currentTimeMillis()));
+        } catch (IOException e) {
+            notifyError("Не удалось выполнить операцию с комнатой: " + e.getMessage());
+        }
     }
 
     /**

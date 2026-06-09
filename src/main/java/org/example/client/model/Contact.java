@@ -28,20 +28,28 @@ public class Contact {
 
     /** Псевдо-контакт «Общий чат» (broadcast), а не реальный пользователь. */
     private final boolean broadcast;
+    /** Псевдо-контакт групповой комнаты (ПР16): {@link #getNick()} = «#имя». */
+    private final boolean room;
 
     public Contact(String nick, Status status) {
-        this(nick, status, false);
+        this(nick, status, false, false);
     }
 
-    private Contact(String nick, Status status, boolean broadcast) {
+    private Contact(String nick, Status status, boolean broadcast, boolean room) {
         this.nick.set(nick);
         this.status.set(status);
         this.broadcast = broadcast;
+        this.room = room;
     }
 
     /** Создаёт псевдо-контакт «Общий чат» — постоянную верхнюю строку списка. */
     public static Contact broadcast() {
-        return new Contact(Message.BROADCAST, Status.ONLINE, true);
+        return new Contact(Message.BROADCAST, Status.ONLINE, true, false);
+    }
+
+    /** Создаёт псевдо-контакт групповой комнаты {@code "#имя"} (ПР16). */
+    public static Contact room(String name) {
+        return new Contact(name, Status.ONLINE, false, true);
     }
 
     public StringProperty nickProperty()           { return nick; }
@@ -59,4 +67,5 @@ public class Contact {
     public void incrementUnread()       { unread.set(unread.get() + 1); }
 
     public boolean isBroadcast()        { return broadcast; }
+    public boolean isRoom()             { return room; }
 }

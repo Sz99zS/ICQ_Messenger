@@ -133,6 +133,10 @@ public final class AccountStore {
         if (nick.indexOf('\t') >= 0 || nick.indexOf('\n') >= 0 || nick.indexOf('\r') >= 0) {
             return "Ник содержит недопустимые символы";
         }
+        // '#' зарезервирован под адрес комнаты (ПР16) — ник не должен с него начинаться.
+        if (nick.startsWith(org.example.protocol.Message.ROOM_PREFIX)) {
+            return "Ник не может начинаться с '#'";
+        }
         if (password == null || password.length() < 4) {
             return "Пароль слишком короткий (минимум 4 символа)";
         }

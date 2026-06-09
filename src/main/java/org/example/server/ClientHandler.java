@@ -9,6 +9,7 @@ import org.example.server.store.FileStore;
 import org.example.server.store.MessageStore;
 import org.example.server.store.OfflineStore;
 import org.example.server.store.ReadReceiptStore;
+import org.example.server.store.RoomStore;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -60,13 +61,15 @@ public class ClientHandler implements Runnable {
     private final OfflineStore offline;
     private final ReadReceiptStore readReceipts;
     private final FileStore files;
+    private final RoomStore rooms;
     /** Идущие сейчас загрузки от этого клиента: ref → сессия (поток у нас один). */
     private final Map<String, FileStore.UploadSession> uploads = new HashMap<>();
     private String nick;
 
     public ClientHandler(Socket socket, ClientRegistry registry, MessageRouter router,
                          MessageStore store, AccountStore accounts, OfflineStore offline,
-                         ReadReceiptStore readReceipts, FileStore files) throws IOException {
+                         ReadReceiptStore readReceipts, FileStore files, RoomStore rooms)
+            throws IOException {
         this.connection = new Connection(socket, ProtocolFactory.createCodec());
         this.registry = registry;
         this.router = router;
@@ -75,6 +78,7 @@ public class ClientHandler implements Runnable {
         this.offline = offline;
         this.readReceipts = readReceipts;
         this.files = files;
+        this.rooms = rooms;
     }
 
     @Override
@@ -186,6 +190,7 @@ public class ClientHandler implements Runnable {
         // История — до анонса о входе остальным, чтобы «живые» сообщения не
         // вклинились в середину проигрываемой ленты.
         sendHistory();
+        sendRoomState(); // ПР16: список комнат и состав тех, где состою
         registry.broadcast(new Message(MessageType.USER_JOINED, "server", null, nick,
                 System.currentTimeMillis()), nick);
         registry.broadcastUserList();
@@ -211,9 +216,10 @@ public class ClientHandler implements Runnable {
      */
     private void sendHistory() throws IOException {
         Set<String> unread = offline.pendingFor(nick);
+        Set<String> myRooms = rooms.roomsOf(nick); // ПР16: подмешиваем историю моих комнат
         // Кэш очередей адресатов: статус исходящих определяем, не дёргая стор на каждое.
         Map<String, Set<String>> pendingByRecipient = new HashMap<>();
-        for (Message past : store.historyFor(nick)) {
+        for (Message past : store.historyFor(nick, myRooms)) {
             Message replay = new Message(past.getType(), past.getFrom(), past.getTo(),
                     past.getBody(), past.getTimestamp());
             replay.getAttributes().putAll(past.getAttributes()); // переносим id и пр.
@@ -223,17 +229,33 @@ public class ClientHandler implements Runnable {
             if (!unreadToMe) {
                 replay.getAttributes().put(ATTR_HISTORY, "1");
             }
-            // Статус для МОИХ исходящих личных пузырей.
-            if (nick.equals(past.getFrom()) && !past.isBroadcast() && id != null) {
+            // Статус для МОИХ исходящих личных пузырей (комнат не касается — там нет галочек).
+            if (nick.equals(past.getFrom()) && !past.isBroadcast() && !past.isRoom() && id != null) {
                 replay.getAttributes().put(ATTR_STATUS, outgoingStatus(past.getTo(), id, pendingByRecipient));
             }
             connection.send(replay);
-            // Сообщение из моей очереди только что доставлено — уведомляем отправителя.
-            if (unreadToMe) {
+            // Сообщение из моей очереди только что доставлено — уведомляем отправителя
+            // (только личка: у комнат и общего чата галочек нет).
+            if (unreadToMe && !past.isRoom()) {
                 notifyDeliveredToSender(past.getFrom(), id);
             }
         }
         offline.clear(nick);
+    }
+
+    /**
+     * При входе сообщает клиенту картину комнат (ПР16): полный список
+     * существующих комнат ({@code ROOM_LIST}) и состав каждой комнаты, где
+     * пользователь состоит ({@code ROOM_MEMBERS}) — по ним клиент восстановит
+     * свои комнаты в списке слева и заголовок с участниками.
+     */
+    private void sendRoomState() throws IOException {
+        connection.send(new Message(MessageType.ROOM_LIST, "server", null,
+                String.join(",", rooms.allRooms()), System.currentTimeMillis()));
+        for (String room : rooms.roomsOf(nick)) {
+            connection.send(new Message(MessageType.ROOM_MEMBERS, "server", room,
+                    String.join(",", rooms.membersOf(room)), System.currentTimeMillis()));
+        }
     }
 
     /** Статус исходящего личного сообщения: ждёт доставки / доставлено / прочитано. */

@@ -20,6 +20,7 @@
             <padding><Insets top="8" right="12" bottom="8" left="12"/></padding>
             <Label fx:id="titleLabel" text="ICQ" styleClass="top-title"/>
             <HBox HBox.hgrow="ALWAYS"/>
+            <Button text="＋ Комната" onAction="#onJoinRoom" styleClass="ghost-button"/>
             <Button text="Сменить тему" onAction="#onToggleTheme" styleClass="ghost-button"/>
         </HBox>
     </top>
