@@ -6,9 +6,11 @@ import org.example.protocol.MessageType;
 import org.example.protocol.ProtocolFactory;
 import org.example.server.store.AccountStore;
 import org.example.server.store.MessageStore;
+import org.example.server.store.OfflineStore;
 
 import java.io.IOException;
 import java.net.Socket;
+import java.util.Set;
 
 /**
  * Обработчик одного клиента — выполняется в отдельном потоке.
@@ -28,15 +30,18 @@ public class ClientHandler implements Runnable {
     private final MessageRouter router;
     private final MessageStore store;
     private final AccountStore accounts;
+    private final OfflineStore offline;
     private String nick;
 
     public ClientHandler(Socket socket, ClientRegistry registry, MessageRouter router,
-                         MessageStore store, AccountStore accounts) throws IOException {
+                         MessageStore store, AccountStore accounts, OfflineStore offline)
+            throws IOException {
         this.connection = new Connection(socket, ProtocolFactory.createCodec());
         this.registry = registry;
         this.router = router;
         this.store = store;
         this.accounts = accounts;
+        this.offline = offline;
     }
 
     @Override
@@ -147,17 +152,30 @@ public class ClientHandler implements Runnable {
     }
 
     /**
-     * Проигрывает вошедшему его историю (ПР9): общий чат плюс личные диалоги с
-     * его участием. Каждый кадр — обычный {@code MESSAGE} с меткой
-     * {@link #ATTR_HISTORY}, чтобы клиент отрисовал его без бейджа «непрочитано».
+     * Проигрывает вошедшему его переписку: общий чат плюс личные диалоги с его
+     * участием (ПР9).
+     *
+     * <p>ПР13: сообщения, накопившиеся в очереди оффлайн-доставки, пока он был не
+     * в сети, отдаются как «живые» (без метки {@link #ATTR_HISTORY}) — клиент
+     * поднимет по ним бейдж «непрочитано». Остальное идёт историей (с меткой),
+     * чтобы не плодить ложных непрочитанных. После проигрывания очередь
+     * очищается: всё доставлено. Адресат уже зарегистрирован онлайн, поэтому
+     * новые сообщения в это время идут напрямую и в очередь не попадают.
      */
     private void sendHistory() throws IOException {
+        Set<String> unread = offline.pendingFor(nick);
         for (Message past : store.historyFor(nick)) {
             Message replay = new Message(past.getType(), past.getFrom(), past.getTo(),
                     past.getBody(), past.getTimestamp());
-            replay.getAttributes().put(ATTR_HISTORY, "1");
+            replay.getAttributes().putAll(past.getAttributes()); // переносим id и пр.
+            String id = past.getAttributes().get(MessageStore.ATTR_ID);
+            // Недоставленное (в очереди) — как «живое»; всё прочее — историей.
+            if (id == null || !unread.contains(id)) {
+                replay.getAttributes().put(ATTR_HISTORY, "1");
+            }
             connection.send(replay);
         }
+        offline.clear(nick);
     }
 
     /**
