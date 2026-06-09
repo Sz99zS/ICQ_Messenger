@@ -74,8 +74,18 @@ public class MainChatController implements ClientServiceListener {
      * приходят повторно — по id отбрасываем дубли, чтобы лента не задваивалась.
      */
     private final Set<String> seenMessageIds = new HashSet<>();
-    /** Счётчик для клиентских id исходящих сообщений (ник делает их уникальными в сети). */
+    /** Счётчик для клиентских id исходящих сообщений (в паре с меткой сессии). */
     private int messageCounter;
+    /**
+     * Метка текущей сессии клиента. Фиксируется один раз при входе и входит в
+     * каждый клиентский id ({@code ник-метка-N}). Без неё счётчик обнулялся бы
+     * при каждом перезапуске, id вроде {@code Alice-1} повторялись бы между
+     * сессиями и совпадали с уже накопленной историей — тогда дедуп
+     * {@link #seenMessageIds} (ПР17) принимал бы новое живое сообщение за
+     * «дубль истории» и не показывал его. Метка делает id уникальными между
+     * запусками, оставаясь стабильной внутри сессии (в т.ч. при реконнекте).
+     */
+    private String sessionTag;
     /** Файловые пузыри по серверному fileId — для подстановки скачанных байтов (ПР15). */
     private final Map<String, ChatMessage> fileById = new HashMap<>();
     /** fileId, ожидающие сохранения после докачки (клик «Сохранить» до прихода байтов). */
@@ -118,6 +128,8 @@ public class MainChatController implements ClientServiceListener {
     public void init(ClientService service, String nick) {
         this.service = service;
         this.nick = nick;
+        // Метка сессии для уникальных id между перезапусками (см. поле sessionTag).
+        this.sessionTag = Long.toString(System.currentTimeMillis(), 36);
         this.service.setListener(this);
 
         titleLabel.setText("Вы вошли как: " + nick);
@@ -522,9 +534,9 @@ public class MainChatController implements ClientServiceListener {
         return DeliveryStatus.DELIVERED;
     }
 
-    /** Уникальный в пределах сети id исходящего сообщения: {@code ник-N}. */
+    /** Уникальный в пределах сети id исходящего сообщения: {@code ник-метка-N}. */
     private String nextMessageId() {
-        return nick + "-" + (++messageCounter);
+        return nick + "-" + sessionTag + "-" + (++messageCounter);
     }
 
     @Override
