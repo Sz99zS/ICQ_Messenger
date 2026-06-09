@@ -12,6 +12,7 @@ import javafx.scene.control.TextField;
 import javafx.util.Duration;
 import org.example.client.model.ChatMessage;
 import org.example.client.model.Contact;
+import org.example.client.model.DeliveryStatus;
 import org.example.client.model.Status;
 import org.example.client.model.UserPresence;
 import org.example.client.service.ClientService;
@@ -55,6 +56,10 @@ public class MainChatController implements ClientServiceListener {
 
     /** История по каждому диалогу. Ключ — {@link Contact#getNick()} собеседника. */
     private final Map<String, ObservableList<ChatMessage>> conversations = new HashMap<>();
+    /** Свои исходящие личные пузыри по id — чтобы обновлять галочку по квитанции (ПР14). */
+    private final Map<String, ChatMessage> outgoingById = new HashMap<>();
+    /** Счётчик для клиентских id исходящих сообщений (ник делает их уникальными в сети). */
+    private int messageCounter;
     /** Контакты по нику — чтобы переиспользовать объекты при перестроении списка. */
     private final Map<String, Contact> contactsByNick = new HashMap<>();
     private final ObservableList<Contact> contacts = FXCollections.observableArrayList();
@@ -138,6 +143,10 @@ public class MainChatController implements ClientServiceListener {
         if (!conv.isEmpty()) {
             messageList.scrollTo(conv.size() - 1);
         }
+        // ПР14: открыли личный диалог — сообщаем собеседнику, что прочли (✓✓ у него).
+        if (!sel.isBroadcast()) {
+            service.sendRead(sel.getNick());
+        }
         updateTitle();
     }
 
@@ -189,13 +198,23 @@ public class MainChatController implements ClientServiceListener {
         if (text.isEmpty()) {
             return;
         }
-        String target = activeContact == null ? Message.BROADCAST : activeContact.getNick();
-        // Своё сообщение сразу в ленту текущего диалога (справа).
+        boolean broadcast = activeContact == null || activeContact.isBroadcast();
+        String target = broadcast ? Message.BROADCAST : activeContact.getNick();
+        String id = broadcast ? null : nextMessageId();
+        // Своё сообщение сразу в ленту текущего диалога (справа). Личное стартует
+        // со статусом «ждёт доставки» (⏳) — квитанции обновят галочку (ПР14).
+        ChatMessage own = broadcast
+                ? new ChatMessage(nick, text, LocalTime.now().format(TIME_FMT), true)
+                : new ChatMessage(id, nick, text, LocalTime.now().format(TIME_FMT), true,
+                        true, DeliveryStatus.PENDING);
+        if (id != null) {
+            outgoingById.put(id, own);
+        }
         ObservableList<ChatMessage> conv = conversationFor(target);
-        conv.add(new ChatMessage(nick, text, LocalTime.now().format(TIME_FMT), true));
+        conv.add(own);
         messageList.scrollTo(conv.size() - 1);
 
-        service.sendMessage(target, text);
+        service.sendMessage(target, text, id);
         inputField.clear();
         stopTyping(); // отправили — больше не «печатаем»
     }
@@ -232,15 +251,20 @@ public class MainChatController implements ClientServiceListener {
             }
 
             ObservableList<ChatMessage> conv = conversationFor(key);
-            conv.add(new ChatMessage(
-                    message.getFrom(),
-                    message.getBody(),
-                    formatTime(message.getTimestamp()),
-                    mine));
+            ChatMessage cm = toChatMessage(message, mine);
+            conv.add(cm);
+            // ПР14: свои личные пузыри помним по id — по ним прилетят галочки.
+            if (cm.getId() != null) {
+                outgoingById.put(cm.getId(), cm);
+            }
 
             boolean isActive = activeContact != null && activeContact.getNick().equals(key);
             if (isActive) {
                 messageList.scrollTo(conv.size() - 1);
+                // Входящее личное в открытом диалоге — сразу отмечаем прочитанным.
+                if (!mine && !message.isBroadcast()) {
+                    service.sendRead(key);
+                }
             } else if (!history) {
                 Contact c = Message.BROADCAST.equals(key) ? broadcastContact : contactsByNick.get(key);
                 if (c != null) {
@@ -248,6 +272,65 @@ public class MainChatController implements ClientServiceListener {
                     contactList.refresh();
                 }
             }
+        });
+    }
+
+    /**
+     * Протокольное сообщение → UI-модель. Для «своих» личных переносит id и
+     * статус доставки (атрибут {@code st}: P/D/R) — чтобы при перелогине пузыри
+     * сразу показали верную галочку (ПР14).
+     */
+    private ChatMessage toChatMessage(Message message, boolean mine) {
+        String time = formatTime(message.getTimestamp());
+        if (mine && !message.isBroadcast()) {
+            return new ChatMessage(message.getAttributes().get("id"), message.getFrom(),
+                    message.getBody(), time, true, true, parseStatus(message.getAttributes().get("st")));
+        }
+        return new ChatMessage(message.getFrom(), message.getBody(), time, mine);
+    }
+
+    /** Код статуса из протокола (P/D/R) → {@link DeliveryStatus}; по умолчанию «доставлено». */
+    private static DeliveryStatus parseStatus(String code) {
+        if ("P".equals(code)) {
+            return DeliveryStatus.PENDING;
+        }
+        if ("R".equals(code)) {
+            return DeliveryStatus.READ;
+        }
+        return DeliveryStatus.DELIVERED;
+    }
+
+    /** Уникальный в пределах сети id исходящего сообщения: {@code ник-N}. */
+    private String nextMessageId() {
+        return nick + "-" + (++messageCounter);
+    }
+
+    @Override
+    public void onDelivered(String messageId) {
+        Platform.runLater(() -> {
+            ChatMessage cm = messageId == null ? null : outgoingById.get(messageId);
+            // «Прочитано» сильнее «доставлено» — не откатываем ✓✓ обратно к ✓.
+            if (cm != null && cm.getStatus() != DeliveryStatus.READ) {
+                cm.setStatus(DeliveryStatus.DELIVERED);
+                messageList.refresh();
+            }
+        });
+    }
+
+    @Override
+    public void onRead(String peer) {
+        Platform.runLater(() -> {
+            ObservableList<ChatMessage> conv = peer == null ? null : conversations.get(peer);
+            if (conv == null) {
+                return;
+            }
+            // Собеседник открыл диалог — все наши личные пузыри к нему прочитаны.
+            for (ChatMessage cm : conv) {
+                if (cm.isMine() && cm.isPrivate()) {
+                    cm.setStatus(DeliveryStatus.READ);
+                }
+            }
+            messageList.refresh();
         });
     }
 

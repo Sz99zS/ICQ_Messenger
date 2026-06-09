@@ -7,9 +7,12 @@ import org.example.protocol.ProtocolFactory;
 import org.example.server.store.AccountStore;
 import org.example.server.store.MessageStore;
 import org.example.server.store.OfflineStore;
+import org.example.server.store.ReadReceiptStore;
 
 import java.io.IOException;
 import java.net.Socket;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -24,6 +27,15 @@ public class ClientHandler implements Runnable {
 
     /** Атрибут-метка: сообщение из истории, а не «живое» (см. {@link #sendHistory()}). */
     public static final String ATTR_HISTORY = "hist";
+    /**
+     * Атрибут со статусом доставки исходящего личного сообщения (ПР14),
+     * проставляется при проигрывании истории отправителю: {@code P} — ждёт
+     * доставки (в очереди), {@code D} — доставлено, {@code R} — прочитано.
+     */
+    public static final String ATTR_STATUS = "st";
+    public static final String STATUS_PENDING = "P";
+    public static final String STATUS_DELIVERED = "D";
+    public static final String STATUS_READ = "R";
 
     private final Connection connection;
     private final ClientRegistry registry;
@@ -31,17 +43,19 @@ public class ClientHandler implements Runnable {
     private final MessageStore store;
     private final AccountStore accounts;
     private final OfflineStore offline;
+    private final ReadReceiptStore readReceipts;
     private String nick;
 
     public ClientHandler(Socket socket, ClientRegistry registry, MessageRouter router,
-                         MessageStore store, AccountStore accounts, OfflineStore offline)
-            throws IOException {
+                         MessageStore store, AccountStore accounts, OfflineStore offline,
+                         ReadReceiptStore readReceipts) throws IOException {
         this.connection = new Connection(socket, ProtocolFactory.createCodec());
         this.registry = registry;
         this.router = router;
         this.store = store;
         this.accounts = accounts;
         this.offline = offline;
+        this.readReceipts = readReceipts;
     }
 
     @Override
@@ -161,21 +175,60 @@ public class ClientHandler implements Runnable {
      * чтобы не плодить ложных непрочитанных. После проигрывания очередь
      * очищается: всё доставлено. Адресат уже зарегистрирован онлайн, поэтому
      * новые сообщения в это время идут напрямую и в очередь не попадают.
+     *
+     * <p>ПР14: на каждое <em>исходящее</em> личное сообщение вошедшего ставим
+     * атрибут {@link #ATTR_STATUS} (ждёт/доставлено/прочитано), чтобы он увидел
+     * актуальные галочки на своих пузырях. А каждое сообщение, которое сейчас
+     * <em>вынимается из его очереди</em>, переходит в «доставлено» — шлём об этом
+     * квитанцию его отправителю (если тот онлайн).
      */
     private void sendHistory() throws IOException {
         Set<String> unread = offline.pendingFor(nick);
+        // Кэш очередей адресатов: статус исходящих определяем, не дёргая стор на каждое.
+        Map<String, Set<String>> pendingByRecipient = new HashMap<>();
         for (Message past : store.historyFor(nick)) {
             Message replay = new Message(past.getType(), past.getFrom(), past.getTo(),
                     past.getBody(), past.getTimestamp());
             replay.getAttributes().putAll(past.getAttributes()); // переносим id и пр.
             String id = past.getAttributes().get(MessageStore.ATTR_ID);
-            // Недоставленное (в очереди) — как «живое»; всё прочее — историей.
-            if (id == null || !unread.contains(id)) {
+            boolean unreadToMe = id != null && unread.contains(id);
+            // Недоставленное мне (в очереди) — как «живое»; всё прочее — историей.
+            if (!unreadToMe) {
                 replay.getAttributes().put(ATTR_HISTORY, "1");
             }
+            // Статус для МОИХ исходящих личных пузырей.
+            if (nick.equals(past.getFrom()) && !past.isBroadcast() && id != null) {
+                replay.getAttributes().put(ATTR_STATUS, outgoingStatus(past.getTo(), id, pendingByRecipient));
+            }
             connection.send(replay);
+            // Сообщение из моей очереди только что доставлено — уведомляем отправителя.
+            if (unreadToMe) {
+                notifyDeliveredToSender(past.getFrom(), id);
+            }
         }
         offline.clear(nick);
+    }
+
+    /** Статус исходящего личного сообщения: ждёт доставки / доставлено / прочитано. */
+    private String outgoingStatus(String recipient, String id,
+                                  Map<String, Set<String>> pendingByRecipient) {
+        Set<String> recipientQueue = pendingByRecipient.computeIfAbsent(
+                recipient, offline::pendingFor);
+        if (recipientQueue.contains(id)) {
+            return STATUS_PENDING;
+        }
+        return readReceipts.isRead(id) ? STATUS_READ : STATUS_DELIVERED;
+    }
+
+    /** Шлёт отправителю {@code sender} квитанцию «доставлено» по сообщению {@code id}. */
+    private void notifyDeliveredToSender(String sender, String id) {
+        if (sender == null || id == null) {
+            return;
+        }
+        Message receipt = new Message(MessageType.DELIVERED, nick, sender, null,
+                System.currentTimeMillis());
+        receipt.getAttributes().put(MessageStore.ATTR_ID, id);
+        registry.sendTo(sender, receipt);
     }
 
     /**

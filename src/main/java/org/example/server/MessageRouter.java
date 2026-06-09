@@ -5,6 +5,9 @@ import org.example.protocol.MessageType;
 import org.example.server.store.AccountStore;
 import org.example.server.store.MessageStore;
 import org.example.server.store.OfflineStore;
+import org.example.server.store.ReadReceiptStore;
+
+import java.util.List;
 
 /**
  * Маршрутизатор сообщений: решает, кому доставить пришедшее от клиента
@@ -32,13 +35,15 @@ public class MessageRouter {
     private final MessageStore store;
     private final AccountStore accounts;
     private final OfflineStore offline;
+    private final ReadReceiptStore readReceipts;
 
-    public MessageRouter(ClientRegistry registry, MessageStore store,
-                         AccountStore accounts, OfflineStore offline) {
+    public MessageRouter(ClientRegistry registry, MessageStore store, AccountStore accounts,
+                         OfflineStore offline, ReadReceiptStore readReceipts) {
         this.registry = registry;
         this.store = store;
         this.accounts = accounts;
         this.offline = offline;
+        this.readReceipts = readReceipts;
     }
 
     /**
@@ -51,6 +56,7 @@ public class MessageRouter {
                 deliver(message, sender);
             }
             case TYPING -> deliver(message, sender);
+            case READ -> handleRead(message, sender);
             case PING -> { /* keep-alive: ничего не пересылаем */ }
             default -> System.out.println("[server] Игнорирую от " + sender.getNick()
                     + ": неподдерживаемый тип " + message.getType());
@@ -63,10 +69,45 @@ public class MessageRouter {
             registry.broadcast(message, sender.getNick());
         } else {
             boolean delivered = registry.sendTo(message.getTo(), message);
-            if (!delivered) {
+            if (delivered) {
+                // Личное сообщение дошло вживую — сразу подтверждаем отправителю.
+                notifyDelivered(sender.getNick(), message.getTo(),
+                        message.getAttributes().get(MessageStore.ATTR_ID));
+            } else {
                 handleUndelivered(sender, message);
             }
         }
+    }
+
+    /**
+     * Квитанция «прочитано» (ПР14): читатель {@code reader} открыл диалог с
+     * {@code peer}. Помечаем прочитанными все личные сообщения {@code peer →
+     * reader} и пересылаем {@code READ} их отправителю, чтобы он увидел ✓✓.
+     */
+    private void handleRead(Message message, ClientHandler reader) {
+        String peer = message.getTo();
+        if (peer == null || peer.isBlank()) {
+            return;
+        }
+        List<String> ids = store.privateIdsFromTo(peer, reader.getNick());
+        if (ids.isEmpty()) {
+            return; // читать нечего — лишних квитанций не плодим
+        }
+        readReceipts.markRead(ids);
+        // Отправителю (peer): «reader прочитал твою переписку с ним».
+        registry.sendTo(peer, new Message(MessageType.READ, reader.getNick(), peer, null,
+                System.currentTimeMillis()));
+    }
+
+    /** Шлёт отправителю {@code sender} квитанцию «доставлено» по сообщению {@code id}. */
+    private void notifyDelivered(String sender, String recipient, String id) {
+        if (id == null) {
+            return;
+        }
+        Message receipt = new Message(MessageType.DELIVERED, recipient, sender, null,
+                System.currentTimeMillis());
+        receipt.getAttributes().put(MessageStore.ATTR_ID, id);
+        registry.sendTo(sender, receipt);
     }
 
     /**
