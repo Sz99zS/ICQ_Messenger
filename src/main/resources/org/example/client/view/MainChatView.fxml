@@ -39,6 +39,7 @@
             </Label>
             <HBox spacing="8" alignment="CENTER" styleClass="input-bar">
                 <padding><Insets top="8" right="10" bottom="10" left="10"/></padding>
+                <Button fx:id="attachButton" text="📎" onAction="#onAttach" styleClass="ghost-button"/>
                 <TextField fx:id="inputField" promptText="Сообщение..." onAction="#onSend" HBox.hgrow="ALWAYS"/>
                 <Button text="Отправить" onAction="#onSend" defaultButton="true" styleClass="primary-button"/>
             </HBox>

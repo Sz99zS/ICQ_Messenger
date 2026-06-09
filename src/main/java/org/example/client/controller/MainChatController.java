@@ -9,6 +9,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
 import javafx.scene.control.TextField;
+import javafx.stage.FileChooser;
 import javafx.util.Duration;
 import org.example.client.model.ChatMessage;
 import org.example.client.model.Contact;
@@ -20,11 +21,16 @@ import org.example.client.service.ClientServiceListener;
 import org.example.client.ui.ThemeManager;
 import org.example.protocol.Message;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -60,6 +66,13 @@ public class MainChatController implements ClientServiceListener {
     private final Map<String, ChatMessage> outgoingById = new HashMap<>();
     /** Счётчик для клиентских id исходящих сообщений (ник делает их уникальными в сети). */
     private int messageCounter;
+    /** Файловые пузыри по серверному fileId — для подстановки скачанных байтов (ПР15). */
+    private final Map<String, ChatMessage> fileById = new HashMap<>();
+    /** fileId, ожидающие сохранения после докачки (клик «Сохранить» до прихода байтов). */
+    private final Set<String> pendingSaves = new HashSet<>();
+
+    /** Потолок размера файла на клиенте (зеркалит серверный лимит). */
+    private static final long MAX_FILE_BYTES = 10L * 1024 * 1024;
     /** Контакты по нику — чтобы переиспользовать объекты при перестроении списка. */
     private final Map<String, Contact> contactsByNick = new HashMap<>();
     private final ObservableList<Contact> contacts = FXCollections.observableArrayList();
@@ -89,7 +102,7 @@ public class MainChatController implements ClientServiceListener {
 
         titleLabel.setText("Вы вошли как: " + nick);
 
-        messageList.setCellFactory(lv -> new ChatBubbleCell());
+        messageList.setCellFactory(lv -> new ChatBubbleCell(this));
 
         contactList.setItems(contacts);
         contactList.setCellFactory(lv -> new ContactCell());
@@ -220,6 +233,39 @@ public class MainChatController implements ClientServiceListener {
     }
 
     @FXML
+    private void onAttach() {
+        if (service == null) {
+            return;
+        }
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Выберите файл для отправки");
+        File file = chooser.showOpenDialog(window());
+        if (file == null) {
+            return;
+        }
+        if (file.length() > MAX_FILE_BYTES) {
+            titleLabel.setText("Файл больше 10 МБ — не отправлен");
+            return;
+        }
+        boolean broadcast = activeContact == null || activeContact.isBroadcast();
+        String target = broadcast ? Message.BROADCAST : activeContact.getNick();
+        String ref = nextMessageId();
+        // Локальный пузырь сразу: у отправителя превью берётся из самого файла,
+        // личный — со статусом «ждёт доставки» (галочки из ПР14).
+        ChatMessage bubble = ChatMessage.fileMessage(broadcast ? null : ref, nick,
+                LocalTime.now().format(TIME_FMT), true, !broadcast,
+                broadcast ? null : DeliveryStatus.PENDING, file.getName(), file.length(),
+                null, null, file);
+        if (!broadcast) {
+            outgoingById.put(ref, bubble);
+        }
+        ObservableList<ChatMessage> conv = conversationFor(target);
+        conv.add(bubble);
+        messageList.scrollTo(conv.size() - 1);
+        service.uploadFile(target, file, ref);
+    }
+
+    @FXML
     private void onToggleTheme() {
         ThemeManager.getInstance().toggle(titleLabel.getScene());
     }
@@ -257,6 +303,10 @@ public class MainChatController implements ClientServiceListener {
             if (cm.getId() != null) {
                 outgoingById.put(cm.getId(), cm);
             }
+            // ПР15: файловые пузыри помним по fileId — в них подставим скачанные байты.
+            if (cm.isFile() && cm.getFileId() != null) {
+                fileById.put(cm.getFileId(), cm);
+            }
 
             boolean isActive = activeContact != null && activeContact.getNick().equals(key);
             if (isActive) {
@@ -282,11 +332,28 @@ public class MainChatController implements ClientServiceListener {
      */
     private ChatMessage toChatMessage(Message message, boolean mine) {
         String time = formatTime(message.getTimestamp());
-        if (mine && !message.isBroadcast()) {
+        boolean privateChat = mine && !message.isBroadcast();
+        // ПР15: сообщение-ссылка на файл (атрибут file=1) → файловый пузырь.
+        if ("1".equals(message.getAttributes().get("file"))) {
+            DeliveryStatus st = privateChat ? parseStatus(message.getAttributes().get("st")) : null;
+            return ChatMessage.fileMessage(message.getAttributes().get("id"), message.getFrom(),
+                    time, mine, privateChat, st, message.getAttributes().get("name"),
+                    parseLong(message.getAttributes().get("size")), message.getAttributes().get("mime"),
+                    message.getAttributes().get("fileId"), null);
+        }
+        if (privateChat) {
             return new ChatMessage(message.getAttributes().get("id"), message.getFrom(),
                     message.getBody(), time, true, true, parseStatus(message.getAttributes().get("st")));
         }
         return new ChatMessage(message.getFrom(), message.getBody(), time, mine);
+    }
+
+    private static long parseLong(String s) {
+        try {
+            return s == null ? 0 : Long.parseLong(s);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     /** Код статуса из протокола (P/D/R) → {@link DeliveryStatus}; по умолчанию «доставлено». */
@@ -332,6 +399,86 @@ public class MainChatController implements ClientServiceListener {
             }
             messageList.refresh();
         });
+    }
+
+    @Override
+    public void onFileReceived(String fileId, byte[] bytes) {
+        Platform.runLater(() -> {
+            ChatMessage cm = fileById.get(fileId);
+            if (cm != null) {
+                cm.setFileBytes(bytes);
+                messageList.refresh(); // картинка перерисуется из байтов
+            }
+            // Если ждали сохранения (клик «Сохранить» до докачки) — теперь сохраняем.
+            if (pendingSaves.remove(fileId)) {
+                saveBytes(cm != null ? cm.getFileName() : "file", bytes);
+            }
+        });
+    }
+
+    /** Картинка-пузырь без байтов — просим сервер докачать (однократно). Зовётся из ячейки. */
+    public void ensureImageLoaded(ChatMessage msg) {
+        if (msg.getFileId() == null || msg.isDownloadRequested()) {
+            return;
+        }
+        msg.setDownloadRequested(true);
+        service.requestFile(msg.getFileId());
+    }
+
+    /** Сохранение файла/картинки на диск (ПР15). Зовётся из ячейки по клику. */
+    public void saveFile(ChatMessage msg) {
+        if (!msg.isFile()) {
+            return;
+        }
+        if (msg.getFileBytes() != null) {
+            saveBytes(msg.getFileName(), msg.getFileBytes());
+        } else if (msg.getLocalFile() != null) {
+            saveLocalCopy(msg);          // отправитель — копируем исходный файл
+        } else if (msg.getFileId() != null) {
+            pendingSaves.add(msg.getFileId()); // докачаем и сохраним по приходу байтов
+            ensureImageLoaded(msg);
+        }
+    }
+
+    /** Записывает байты в выбранный пользователем файл. */
+    private void saveBytes(String suggestedName, byte[] bytes) {
+        File dest = chooseSaveTarget(suggestedName);
+        if (dest == null) {
+            return;
+        }
+        try {
+            Files.write(dest.toPath(), bytes);
+            titleLabel.setText("Сохранено: " + dest.getName());
+        } catch (IOException e) {
+            titleLabel.setText("Не удалось сохранить: " + e.getMessage());
+        }
+    }
+
+    /** Копирует локальный файл отправителя в выбранное место. */
+    private void saveLocalCopy(ChatMessage msg) {
+        File dest = chooseSaveTarget(msg.getFileName());
+        if (dest == null) {
+            return;
+        }
+        try {
+            Files.copy(msg.getLocalFile().toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            titleLabel.setText("Сохранено: " + dest.getName());
+        } catch (IOException e) {
+            titleLabel.setText("Не удалось сохранить: " + e.getMessage());
+        }
+    }
+
+    private File chooseSaveTarget(String suggestedName) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Сохранить как…");
+        if (suggestedName != null) {
+            chooser.setInitialFileName(suggestedName);
+        }
+        return chooser.showSaveDialog(window());
+    }
+
+    private javafx.stage.Window window() {
+        return titleLabel.getScene() == null ? null : titleLabel.getScene().getWindow();
     }
 
     /** Метка времени сообщения (epoch ms) → {@code HH:mm} в локальной зоне. */

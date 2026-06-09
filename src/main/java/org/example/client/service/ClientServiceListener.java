@@ -29,6 +29,9 @@ public interface ClientServiceListener {
     /** Квитанция «прочитано» (ПР14): собеседник {@code peer} прочитал нашу с ним переписку. */
     void onRead(String peer);
 
+    /** Файл {@code fileId} полностью скачан (ПР15): его байты — для превью/сохранения. */
+    void onFileReceived(String fileId, byte[] bytes);
+
     /** Обновился список онлайн-пользователей (с их статусами). */
     void onUserListChanged(List<UserPresence> users);
 
