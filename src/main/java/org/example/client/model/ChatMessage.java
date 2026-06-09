@@ -25,6 +25,8 @@ public final class ChatMessage {
     private final String sender;
     private final String text;
     private final String time;
+    /** Момент сообщения (epoch ms) — для разделителей по датам в ленте (редизайн UI). */
+    private final long timestamp;
     private final boolean mine;
     private final boolean privateChat;
     private DeliveryStatus status;
@@ -39,13 +41,14 @@ public final class ChatMessage {
     private byte[] fileBytes;
     private boolean downloadRequested;
 
-    private ChatMessage(String id, String sender, String text, String time, boolean mine,
-                        boolean privateChat, DeliveryStatus status, boolean file, String fileName,
-                        long fileSize, String mime, String fileId, File localFile) {
+    private ChatMessage(String id, String sender, String text, String time, long timestamp,
+                        boolean mine, boolean privateChat, DeliveryStatus status, boolean file,
+                        String fileName, long fileSize, String mime, String fileId, File localFile) {
         this.id = id;
         this.sender = sender;
         this.text = text;
         this.time = time;
+        this.timestamp = timestamp;
         this.mine = mine;
         this.privateChat = privateChat;
         this.status = status;
@@ -58,21 +61,24 @@ public final class ChatMessage {
     }
 
     /** Полный конструктор текстового сообщения (ПР14). */
-    public ChatMessage(String id, String sender, String text, String time, boolean mine,
-                       boolean privateChat, DeliveryStatus status) {
-        this(id, sender, text, time, mine, privateChat, status, false, null, 0, null, null, null);
+    public ChatMessage(String id, String sender, String text, String time, long timestamp,
+                       boolean mine, boolean privateChat, DeliveryStatus status) {
+        this(id, sender, text, time, timestamp, mine, privateChat, status,
+                false, null, 0, null, null, null);
     }
 
     /** Упрощённый конструктор для сообщений без статуса (чужие, общий чат). */
-    public ChatMessage(String sender, String text, String time, boolean mine) {
-        this(null, sender, text, time, mine, false, null, false, null, 0, null, null, null);
+    public ChatMessage(String sender, String text, String time, long timestamp, boolean mine) {
+        this(null, sender, text, time, timestamp, mine, false, null,
+                false, null, 0, null, null, null);
     }
 
     /** Файл-сообщение (ПР15): {@code localFile} у отправителя, иначе {@code fileId} у получателя. */
-    public static ChatMessage fileMessage(String id, String sender, String time, boolean mine,
-                                          boolean privateChat, DeliveryStatus status, String fileName,
-                                          long fileSize, String mime, String fileId, File localFile) {
-        return new ChatMessage(id, sender, null, time, mine, privateChat, status,
+    public static ChatMessage fileMessage(String id, String sender, String time, long timestamp,
+                                          boolean mine, boolean privateChat, DeliveryStatus status,
+                                          String fileName, long fileSize, String mime, String fileId,
+                                          File localFile) {
+        return new ChatMessage(id, sender, null, time, timestamp, mine, privateChat, status,
                 true, fileName, fileSize, mime, fileId, localFile);
     }
 
@@ -80,6 +86,7 @@ public final class ChatMessage {
     public String getSender()         { return sender; }
     public String getText()           { return text; }
     public String getTime()           { return time; }
+    public long getTimestamp()        { return timestamp; }
     public boolean isMine()           { return mine; }
     public boolean isPrivate()        { return privateChat; }
     public DeliveryStatus getStatus() { return status; }
