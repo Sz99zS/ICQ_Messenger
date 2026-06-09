@@ -49,6 +49,14 @@ public final class MessageStore {
     /** Сколько последних сообщений хранить по умолчанию. */
     public static final int DEFAULT_MAX_MESSAGES = 2000;
 
+    /**
+     * Атрибут со стабильным идентификатором сообщения (ПР13). Присваивается
+     * сервером при первом сохранении и едет дальше и в журнал, и по сети — по
+     * нему очередь оффлайн-доставки ({@code OfflineStore}) отличает недоставленное
+     * от уже виденного, а будущие галочки «прочитано» смогут адресовать сообщение.
+     */
+    public static final String ATTR_ID = "id";
+
     private final Path file;
     private final ProtocolCodec codec = ProtocolFactory.createCodec();
     /** Вся сохранённая история в порядке поступления (под {@code this}-монитором). */
@@ -58,6 +66,12 @@ public final class MessageStore {
     private final int maxMessages;
     /** Достигнув этого размера в памяти, запускаем компакцию (обрезку + перезапись). */
     private final int compactThreshold;
+    /**
+     * Счётчик для следующего {@link #ATTR_ID}. Сидируется максимумом из журнала
+     * при загрузке, чтобы id оставались монотонными и не сталкивались после
+     * перезапуска (под {@code this}-монитором).
+     */
+    private long nextId = 1;
 
     /**
      * Открывает (создавая при необходимости) журнал и загружает прошлую историю
@@ -111,6 +125,27 @@ public final class MessageStore {
         if (history.size() > maxMessages) {
             compactLocked();
         }
+        seedNextId();
+    }
+
+    /**
+     * Сдвигает счётчик id за максимальный из уже сохранённых — так после
+     * перезапуска новые сообщения не получают id, который ещё «висит» в очереди
+     * оффлайн-доставки. Старые сообщения без id (журналы до ПР13) игнорируются.
+     */
+    private void seedNextId() {
+        long maxId = 0;
+        for (Message m : history) {
+            String idStr = m.getAttributes().get(ATTR_ID);
+            if (idStr != null) {
+                try {
+                    maxId = Math.max(maxId, Long.parseLong(idStr));
+                } catch (NumberFormatException ignored) {
+                    // не наш формат id — не учитываем
+                }
+            }
+        }
+        nextId = maxId + 1;
     }
 
     /**
@@ -119,6 +154,11 @@ public final class MessageStore {
      * пробрасываем — сбой диска не должен ронять доставку.
      */
     public synchronized void append(Message message) {
+        // Присваиваем стабильный id, если его ещё нет: попадёт и в память, и в
+        // файл (атрибут сериализуется кодеком), и уедет адресату по сети.
+        if (message.getAttributes().get(ATTR_ID) == null) {
+            message.getAttributes().put(ATTR_ID, Long.toString(nextId++));
+        }
         history.add(message);
         if (history.size() >= compactThreshold) {
             // Пора ротировать: обрезаем старые и перезаписываем файл целиком
