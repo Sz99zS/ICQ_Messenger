@@ -9,6 +9,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import org.example.server.store.AccountStore;
+import org.example.server.store.FileStore;
 import org.example.server.store.MessageStore;
 import org.example.server.store.OfflineStore;
 import org.example.server.store.ReadReceiptStore;
@@ -37,6 +38,8 @@ public class ChatServer {
     private final OfflineStore offline = new OfflineStore();
     // Квитанции «прочитано» (ПР14): устойчивость галочки ✓✓ к перезапуску.
     private final ReadReceiptStore readReceipts = new ReadReceiptStore();
+    // Хранилище переданных файлов (ПР15): байты на диске + индекс метаданных.
+    private final FileStore files = new FileStore();
     private final MessageRouter router =
             new MessageRouter(registry, store, accounts, offline, readReceipts);
     // Поток на клиента: их число заранее неизвестно — берём кэширующий пул.
@@ -76,7 +79,7 @@ public class ChatServer {
     private void acceptClient(Socket socket) {
         try {
             ClientHandler handler = new ClientHandler(socket, registry, router, store, accounts,
-                    offline, readReceipts);
+                    offline, readReceipts, files);
             pool.submit(handler);
         } catch (IOException e) {
             System.out.println("[server] Не удалось принять клиента: " + e.getMessage());

@@ -7,10 +7,18 @@ import org.example.protocol.Message;
 import org.example.protocol.MessageType;
 import org.example.protocol.ProtocolFactory;
 
+import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.Socket;
+import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -37,6 +45,11 @@ public class ClientService {
     private Connection connection;
     private Thread readerThread;
     private volatile boolean running;
+
+    /** Размер чанка при загрузке файла (сырые байты). */
+    private static final int FILE_CHUNK_BYTES = 48 * 1024;
+    /** Идущие сейчас скачивания: ref(fileId) → накопитель байтов (живёт в потоке-читателе). */
+    private final Map<String, ByteArrayOutputStream> downloads = new HashMap<>();
 
     /** Фоновый heartbeat: шлёт PING, чтобы сервер видел живость соединения. */
     private ScheduledExecutorService heartbeat;
@@ -204,6 +217,9 @@ public class ClientService {
             case MESSAGE -> listener.onMessage(msg);
             case DELIVERED -> listener.onDelivered(msg.getAttributes().get("id"));
             case READ -> listener.onRead(msg.getFrom());
+            case FILE_START -> downloads.put(msg.getAttributes().get("ref"), new ByteArrayOutputStream());
+            case FILE_CHUNK -> appendDownload(msg);
+            case FILE_END -> finishDownload(msg);
             case USER_LIST -> listener.onUserListChanged(parsePresence(msg.getBody()));
             case TYPING -> listener.onTyping(msg.getFrom(), "1".equals(msg.getBody()));
             case USER_JOINED, USER_LEFT -> { /* список придёт отдельным USER_LIST */ }
@@ -288,6 +304,92 @@ public class ClientService {
                     typing ? "1" : "0", System.currentTimeMillis()));
         } catch (IOException ignored) {
             // намеренно тихо
+        }
+    }
+
+    /**
+     * Загружает файл на сервер (ПР15) чанками в фоновом потоке, чтобы не морозить
+     * UI. {@code ref} — клиентский хэндл: он же станет id сообщения-ссылки (для
+     * галочек). По завершении сервер сам разошлёт сообщение-ссылку адресату.
+     */
+    public void uploadFile(String to, File file, String ref) {
+        if (connection == null || !running || file == null) {
+            return;
+        }
+        Thread t = new Thread(() -> doUpload(to, file, ref), "icq-upload");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void doUpload(String to, File file, String ref) {
+        try {
+            Message start = new Message(MessageType.FILE_START, nick, to, null,
+                    System.currentTimeMillis());
+            start.getAttributes().put("ref", ref);
+            start.getAttributes().put("name", file.getName());
+            start.getAttributes().put("size", Long.toString(file.length()));
+            String mime = probeMime(file);
+            if (mime != null) {
+                start.getAttributes().put("mime", mime);
+            }
+            connection.send(start);
+
+            byte[] buf = new byte[FILE_CHUNK_BYTES];
+            try (InputStream in = new BufferedInputStream(Files.newInputStream(file.toPath()))) {
+                int read;
+                while ((read = in.read(buf)) > 0) {
+                    byte[] data = read == buf.length ? buf : java.util.Arrays.copyOf(buf, read);
+                    Message chunk = new Message(MessageType.FILE_CHUNK, nick, to,
+                            Base64.getEncoder().encodeToString(data), System.currentTimeMillis());
+                    chunk.getAttributes().put("ref", ref);
+                    connection.send(chunk);
+                }
+            }
+            Message end = new Message(MessageType.FILE_END, nick, to, null,
+                    System.currentTimeMillis());
+            end.getAttributes().put("ref", ref);
+            connection.send(end);
+        } catch (IOException e) {
+            notifyError("Не удалось отправить файл: " + e.getMessage());
+        }
+    }
+
+    /** Запрашивает у сервера скачивание файла {@code fileId} (ПР15). */
+    public void requestFile(String fileId) {
+        if (connection == null || !running || fileId == null) {
+            return;
+        }
+        try {
+            Message get = new Message(MessageType.FILE_GET, nick, null, null,
+                    System.currentTimeMillis());
+            get.getAttributes().put("fileId", fileId);
+            connection.send(get);
+        } catch (IOException e) {
+            notifyError("Не удалось запросить файл: " + e.getMessage());
+        }
+    }
+
+    private static String probeMime(File file) {
+        try {
+            return Files.probeContentType(file.toPath());
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private void appendDownload(Message msg) {
+        ByteArrayOutputStream buf = downloads.get(msg.getAttributes().get("ref"));
+        if (buf != null && msg.getBody() != null) {
+            byte[] data = Base64.getDecoder().decode(msg.getBody());
+            buf.write(data, 0, data.length);
+        }
+    }
+
+    private void finishDownload(Message msg) {
+        String ref = msg.getAttributes().get("ref");
+        ByteArrayOutputStream buf = downloads.remove(ref);
+        if (buf != null && listener != null) {
+            listener.onFileReceived(ref, buf.toByteArray());
         }
     }
 
