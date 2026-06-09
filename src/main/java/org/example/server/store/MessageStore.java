@@ -196,6 +196,24 @@ public final class MessageStore {
         return result;
     }
 
+    /**
+     * id всех личных сообщений, отправленных {@code from} пользователю {@code to}
+     * (ПР14). Используется при квитанции «прочитано»: читатель {@code to} открыл
+     * диалог — помечаем прочитанными все сообщения его собеседника {@code from}.
+     */
+    public synchronized List<String> privateIdsFromTo(String from, String to) {
+        List<String> ids = new ArrayList<>();
+        for (Message m : history) {
+            if (!m.isBroadcast() && from.equals(m.getFrom()) && to.equals(m.getTo())) {
+                String id = m.getAttributes().get(ATTR_ID);
+                if (id != null) {
+                    ids.add(id);
+                }
+            }
+        }
+        return ids;
+    }
+
     /** Текущее число хранимых сообщений (для тестов/диагностики). */
     public synchronized int size() {
         return history.size();

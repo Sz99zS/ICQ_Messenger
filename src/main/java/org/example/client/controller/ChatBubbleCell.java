@@ -34,7 +34,12 @@ public class ChatBubbleCell extends ListCell<ChatMessage> {
         bubble.setMaxWidth(260);
         bubble.getStyleClass().add(item.isMine() ? "bubble-mine" : "bubble-other");
 
-        Label meta = new Label((item.isMine() ? "" : item.getSender() + " · ") + item.getTime());
+        String metaText = (item.isMine() ? "" : item.getSender() + " · ") + item.getTime();
+        // ПР14: на «своих» личных пузырях — галочка статуса (⏳/✓/✓✓).
+        if (item.isMine() && item.isPrivate() && item.getStatus() != null) {
+            metaText += " " + item.getStatus().glyph();
+        }
+        Label meta = new Label(metaText);
         meta.getStyleClass().add("bubble-meta");
 
         VBox box = new VBox(2, bubble, meta);

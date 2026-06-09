@@ -23,6 +23,12 @@ public interface ClientServiceListener {
     /** Пришло текстовое сообщение от другого пользователя. */
     void onMessage(Message message);
 
+    /** Квитанция «доставлено» (ПР14): наше личное сообщение {@code messageId} дошло. */
+    void onDelivered(String messageId);
+
+    /** Квитанция «прочитано» (ПР14): собеседник {@code peer} прочитал нашу с ним переписку. */
+    void onRead(String peer);
+
     /** Обновился список онлайн-пользователей (с их статусами). */
     void onUserListChanged(List<UserPresence> users);
 

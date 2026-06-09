@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit;
 import org.example.server.store.AccountStore;
 import org.example.server.store.MessageStore;
 import org.example.server.store.OfflineStore;
+import org.example.server.store.ReadReceiptStore;
 
 /**
  * Серверная часть мессенджера ICQ.
@@ -34,7 +35,10 @@ public class ChatServer {
     private final AccountStore accounts = new AccountStore();
     // Очередь оффлайн-доставки (ПР13): личка для тех, кто сейчас не в сети.
     private final OfflineStore offline = new OfflineStore();
-    private final MessageRouter router = new MessageRouter(registry, store, accounts, offline);
+    // Квитанции «прочитано» (ПР14): устойчивость галочки ✓✓ к перезапуску.
+    private final ReadReceiptStore readReceipts = new ReadReceiptStore();
+    private final MessageRouter router =
+            new MessageRouter(registry, store, accounts, offline, readReceipts);
     // Поток на клиента: их число заранее неизвестно — берём кэширующий пул.
     private final ExecutorService pool = Executors.newCachedThreadPool();
     // Периодически пересчитывает статусы (ONLINE/AWAY) и реапит мёртвые соединения.
@@ -71,7 +75,8 @@ public class ChatServer {
 
     private void acceptClient(Socket socket) {
         try {
-            ClientHandler handler = new ClientHandler(socket, registry, router, store, accounts, offline);
+            ClientHandler handler = new ClientHandler(socket, registry, router, store, accounts,
+                    offline, readReceipts);
             pool.submit(handler);
         } catch (IOException e) {
             System.out.println("[server] Не удалось принять клиента: " + e.getMessage());

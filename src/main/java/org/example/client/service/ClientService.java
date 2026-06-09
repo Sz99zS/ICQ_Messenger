@@ -202,6 +202,8 @@ public class ClientService {
                 disconnect();
             }
             case MESSAGE -> listener.onMessage(msg);
+            case DELIVERED -> listener.onDelivered(msg.getAttributes().get("id"));
+            case READ -> listener.onRead(msg.getFrom());
             case USER_LIST -> listener.onUserListChanged(parsePresence(msg.getBody()));
             case TYPING -> listener.onTyping(msg.getFrom(), "1".equals(msg.getBody()));
             case USER_JOINED, USER_LEFT -> { /* список придёт отдельным USER_LIST */ }
@@ -236,16 +238,40 @@ public class ClientService {
         return users;
     }
 
-    /** Отправка сообщения на сервер. */
-    public void sendMessage(String to, String text) {
+    /**
+     * Отправка сообщения на сервер. {@code id} (ПР14) — клиентский идентификатор
+     * для сопоставления с квитанциями доставки; сервер его сохраняет как есть.
+     */
+    public void sendMessage(String to, String text, String id) {
         if (connection == null || !running) {
             return;
         }
         try {
-            connection.send(new Message(MessageType.MESSAGE, nick, to, text,
-                    System.currentTimeMillis()));
+            Message msg = new Message(MessageType.MESSAGE, nick, to, text,
+                    System.currentTimeMillis());
+            if (id != null) {
+                msg.getAttributes().put("id", id);
+            }
+            connection.send(msg);
         } catch (IOException e) {
             notifyError("Не удалось отправить: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Сообщает серверу, что мы открыли диалог с {@code peer} и прочли его
+     * сообщения (ПР14). Сервер пометит их и уведомит отправителя (✓✓). Ошибки
+     * глушим — квитанция некритична.
+     */
+    public void sendRead(String peer) {
+        if (connection == null || !running || peer == null) {
+            return;
+        }
+        try {
+            connection.send(new Message(MessageType.READ, nick, peer, null,
+                    System.currentTimeMillis()));
+        } catch (IOException ignored) {
+            // намеренно тихо
         }
     }
 
