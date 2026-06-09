@@ -27,6 +27,9 @@ public final class Message {
     /** Псевдо-адресат «всем» для широковещательных сообщений. */
     public static final String BROADCAST = "*";
 
+    /** Префикс адреса комнаты (ПР16): {@code to="#имя"} — сообщение в комнату. */
+    public static final String ROOM_PREFIX = "#";
+
     public Message(MessageType type, String from, String to, String body, long timestamp) {
         this.type = type;
         this.from = from;
@@ -61,6 +64,11 @@ public final class Message {
     /** Широковещательное ли это сообщение (адресат не указан). */
     public boolean isBroadcast() {
         return to == null || to.isEmpty() || BROADCAST.equals(to);
+    }
+
+    /** Адресовано ли сообщение комнате (ПР16): {@code to} начинается с {@link #ROOM_PREFIX}. */
+    public boolean isRoom() {
+        return to != null && to.startsWith(ROOM_PREFIX);
     }
 
     @Override

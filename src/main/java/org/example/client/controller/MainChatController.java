@@ -5,10 +5,13 @@ import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.fxml.FXML;
+import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
+import javafx.scene.control.MenuItem;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TextInputDialog;
 import javafx.stage.FileChooser;
 import javafx.util.Duration;
 import org.example.client.model.ChatMessage;
@@ -29,6 +32,7 @@ import java.time.Instant;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -82,6 +86,16 @@ public class MainChatController implements ClientServiceListener {
     /** Контакт, диалог с которым открыт сейчас. */
     private Contact activeContact;
 
+    // --- групповые комнаты (ПР16) ---
+    /** Псевдо-контакты комнат, в которых я состою. Ключ — «#имя». */
+    private final Map<String, Contact> roomContacts = new HashMap<>();
+    /** Состав комнат для заголовка: «#имя» → список участников. */
+    private final Map<String, List<String>> roomMembers = new HashMap<>();
+    /** Последний полученный список существующих комнат (для диалога «войти»). */
+    private final List<String> availableRooms = new ArrayList<>();
+    /** Комната, которую надо авто-выбрать, как только придёт её состав (после «войти»). */
+    private String pendingRoomSelect;
+
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
 
     // --- индикатор «печатает…» ---
@@ -105,7 +119,7 @@ public class MainChatController implements ClientServiceListener {
         messageList.setCellFactory(lv -> new ChatBubbleCell(this));
 
         contactList.setItems(contacts);
-        contactList.setCellFactory(lv -> new ContactCell());
+        contactList.setCellFactory(lv -> new ContactCell(this));
         // Общий чат всегда присутствует и выбран по умолчанию.
         broadcastContact = Contact.broadcast();
         contacts.add(broadcastContact);
@@ -143,6 +157,45 @@ public class MainChatController implements ClientServiceListener {
         contacts.add(c);
     }
 
+    /**
+     * ПР16: закрепляет комнату {@code roomKey} («#имя») в списке слева, если её
+     * там ещё нет. Комната ставится сразу под «Общим чатом».
+     */
+    private void ensureRoomContact(String roomKey) {
+        if (roomKey == null || roomContacts.containsKey(roomKey)) {
+            return;
+        }
+        Contact c = Contact.room(roomKey);
+        roomContacts.put(roomKey, c);
+        contacts.add(contacts.indexOf(broadcastContact) + 1, c);
+    }
+
+    /** Контакт по ключу диалога (общий чат / комната «#имя» / ник собеседника). */
+    private Contact contactFor(String key) {
+        if (Message.BROADCAST.equals(key)) {
+            return broadcastContact;
+        }
+        if (key.startsWith(Message.ROOM_PREFIX)) {
+            return roomContacts.get(key);
+        }
+        return contactsByNick.get(key);
+    }
+
+    /** Открыт ли сейчас общий чат (адресат — broadcast). */
+    private boolean isBroadcastTarget() {
+        return activeContact == null || activeContact.isBroadcast();
+    }
+
+    /** Открыта ли сейчас личка с реальным пользователем (не общий чат и не комната). */
+    private boolean isPersonalTarget() {
+        return activeContact != null && !activeContact.isBroadcast() && !activeContact.isRoom();
+    }
+
+    /** Адрес для отправки из текущего диалога: «*», «#имя» или ник. */
+    private String currentTarget() {
+        return isBroadcastTarget() ? Message.BROADCAST : activeContact.getNick();
+    }
+
     /** Переключение открытого диалога при выборе контакта в списке. */
     private void onContactSelected(Contact sel) {
         if (sel == null) {
@@ -157,17 +210,26 @@ public class MainChatController implements ClientServiceListener {
             messageList.scrollTo(conv.size() - 1);
         }
         // ПР14: открыли личный диалог — сообщаем собеседнику, что прочли (✓✓ у него).
-        if (!sel.isBroadcast()) {
+        // У комнат и общего чата квитанций нет.
+        if (!sel.isBroadcast() && !sel.isRoom()) {
             service.sendRead(sel.getNick());
         }
         updateTitle();
     }
 
-    /** Заголовок окна отражает, с кем сейчас разговор. */
+    /** Заголовок окна отражает, с кем/где сейчас разговор. */
     private void updateTitle() {
-        String where = activeContact == null || activeContact.isBroadcast()
-                ? "Общий чат"
-                : "Личный чат с " + activeContact.getNick();
+        String where;
+        if (activeContact == null || activeContact.isBroadcast()) {
+            where = "Общий чат";
+        } else if (activeContact.isRoom()) {
+            List<String> members = roomMembers.get(activeContact.getNick());
+            where = "Комната " + activeContact.getNick()
+                    + (members == null || members.isEmpty()
+                        ? "" : " — участники: " + String.join(", ", members));
+        } else {
+            where = "Личный чат с " + activeContact.getNick();
+        }
         titleLabel.setText(nick + " — " + where);
     }
 
@@ -211,15 +273,16 @@ public class MainChatController implements ClientServiceListener {
         if (text.isEmpty()) {
             return;
         }
-        boolean broadcast = activeContact == null || activeContact.isBroadcast();
-        String target = broadcast ? Message.BROADCAST : activeContact.getNick();
-        String id = broadcast ? null : nextMessageId();
+        boolean personal = isPersonalTarget();
+        String target = currentTarget();
+        String id = personal ? nextMessageId() : null;
         // Своё сообщение сразу в ленту текущего диалога (справа). Личное стартует
         // со статусом «ждёт доставки» (⏳) — квитанции обновят галочку (ПР14).
-        ChatMessage own = broadcast
-                ? new ChatMessage(nick, text, LocalTime.now().format(TIME_FMT), true)
-                : new ChatMessage(id, nick, text, LocalTime.now().format(TIME_FMT), true,
-                        true, DeliveryStatus.PENDING);
+        // Общий чат и комнаты — без галочек (как и раньше бродкаст).
+        ChatMessage own = personal
+                ? new ChatMessage(id, nick, text, LocalTime.now().format(TIME_FMT), true,
+                        true, DeliveryStatus.PENDING)
+                : new ChatMessage(nick, text, LocalTime.now().format(TIME_FMT), true);
         if (id != null) {
             outgoingById.put(id, own);
         }
@@ -247,16 +310,17 @@ public class MainChatController implements ClientServiceListener {
             titleLabel.setText("Файл больше 10 МБ — не отправлен");
             return;
         }
-        boolean broadcast = activeContact == null || activeContact.isBroadcast();
-        String target = broadcast ? Message.BROADCAST : activeContact.getNick();
+        boolean personal = isPersonalTarget();
+        String target = currentTarget();
         String ref = nextMessageId();
         // Локальный пузырь сразу: у отправителя превью берётся из самого файла,
-        // личный — со статусом «ждёт доставки» (галочки из ПР14).
-        ChatMessage bubble = ChatMessage.fileMessage(broadcast ? null : ref, nick,
-                LocalTime.now().format(TIME_FMT), true, !broadcast,
-                broadcast ? null : DeliveryStatus.PENDING, file.getName(), file.length(),
+        // личный — со статусом «ждёт доставки» (галочки из ПР14). Комната/общий
+        // чат — без галочек.
+        ChatMessage bubble = ChatMessage.fileMessage(personal ? ref : null, nick,
+                LocalTime.now().format(TIME_FMT), true, personal,
+                personal ? DeliveryStatus.PENDING : null, file.getName(), file.length(),
                 null, null, file);
-        if (!broadcast) {
+        if (personal) {
             outgoingById.put(ref, bubble);
         }
         ObservableList<ChatMessage> conv = conversationFor(target);
@@ -270,6 +334,55 @@ public class MainChatController implements ClientServiceListener {
         ThemeManager.getInstance().toggle(titleLabel.getScene());
     }
 
+    /**
+     * ПР16: диалог «войти/создать комнату». Имя без префикса дополняется «#».
+     * Если комната существует — сервер просто добавит нас в участники, иначе
+     * создаст её. По приходу состава комнату авто-выбираем (см. {@code pendingRoomSelect}).
+     */
+    @FXML
+    private void onJoinRoom() {
+        if (service == null) {
+            return;
+        }
+        service.requestRoomList(); // освежим список к следующему открытию диалога
+        TextInputDialog dialog = new TextInputDialog();
+        dialog.setTitle("Комнаты");
+        dialog.setHeaderText(availableRooms.isEmpty()
+                ? "Введите имя комнаты, чтобы создать её:"
+                : "Доступные комнаты: " + String.join(", ", availableRooms)
+                        + "\nВведите имя, чтобы войти или создать новую:");
+        dialog.setContentText("Имя комнаты:");
+        if (window() != null) {
+            dialog.initOwner(window());
+        }
+        dialog.showAndWait().ifPresent(name -> {
+            String trimmed = name.trim();
+            if (trimmed.isEmpty()) {
+                return;
+            }
+            String roomKey = trimmed.startsWith(Message.ROOM_PREFIX)
+                    ? trimmed : Message.ROOM_PREFIX + trimmed;
+            pendingRoomSelect = roomKey;
+            service.joinRoom(roomKey);
+        });
+    }
+
+    /** ПР16: покинуть комнату — из контекст-меню её строки. Чистит ленту и список. */
+    public void leaveRoom(String roomKey) {
+        if (service == null || roomKey == null) {
+            return;
+        }
+        service.leaveRoom(roomKey);
+        roomContacts.remove(roomKey);
+        roomMembers.remove(roomKey);
+        conversations.remove(roomKey);
+        contacts.removeIf(c -> c.isRoom() && c.getNick().equals(roomKey));
+        if (activeContact != null && activeContact.isRoom()
+                && activeContact.getNick().equals(roomKey)) {
+            contactList.getSelectionModel().select(broadcastContact);
+        }
+    }
+
     // ---- ClientServiceListener: события «снизу» ----
 
     @Override
@@ -281,18 +394,25 @@ public class MainChatController implements ClientServiceListener {
     public void onMessage(Message message) {
         Platform.runLater(() -> {
             boolean mine = nick.equals(message.getFrom());
-            // Broadcast → общий чат; личка → диалог с собеседником (для своих же
-            // сообщений из истории собеседник — это адресат, а не отправитель).
-            String key = message.isBroadcast()
-                    ? Message.BROADCAST
-                    : (mine ? message.getTo() : message.getFrom());
+            // Broadcast → общий чат; комната → её лента «#имя»; личка → диалог с
+            // собеседником (для своих же сообщений из истории собеседник — адресат).
+            String key;
+            if (message.isBroadcast()) {
+                key = Message.BROADCAST;
+            } else if (message.isRoom()) {
+                key = message.getTo();
+            } else {
+                key = mine ? message.getTo() : message.getFrom();
+            }
             // Метка истории (ПР9): такие сообщения проигрываются при входе и не
             // должны поднимать счётчик «непрочитано».
             boolean history = "1".equals(message.getAttributes().get("hist"));
 
-            // ПР10: личный диалог закрепляет собеседника в списке контактов
-            // сразу (в т.ч. при проигрывании истории с тем, кто сейчас оффлайн).
-            if (!message.isBroadcast()) {
+            // Закрепляем диалог в списке слева: комнату (ПР16) или личного
+            // собеседника (ПР10) — в т.ч. при проигрывании истории.
+            if (message.isRoom()) {
+                ensureRoomContact(key);
+            } else if (!message.isBroadcast()) {
                 ensureContact(key);
             }
 
@@ -311,12 +431,13 @@ public class MainChatController implements ClientServiceListener {
             boolean isActive = activeContact != null && activeContact.getNick().equals(key);
             if (isActive) {
                 messageList.scrollTo(conv.size() - 1);
-                // Входящее личное в открытом диалоге — сразу отмечаем прочитанным.
-                if (!mine && !message.isBroadcast()) {
+                // Входящее личное в открытом диалоге — сразу отмечаем прочитанным
+                // (комнат не касается: там квитанций нет).
+                if (!mine && !message.isBroadcast() && !message.isRoom()) {
                     service.sendRead(key);
                 }
             } else if (!history) {
-                Contact c = Message.BROADCAST.equals(key) ? broadcastContact : contactsByNick.get(key);
+                Contact c = contactFor(key);
                 if (c != null) {
                     c.incrementUnread();
                     contactList.refresh();
@@ -332,7 +453,7 @@ public class MainChatController implements ClientServiceListener {
      */
     private ChatMessage toChatMessage(Message message, boolean mine) {
         String time = formatTime(message.getTimestamp());
-        boolean privateChat = mine && !message.isBroadcast();
+        boolean privateChat = mine && !message.isBroadcast() && !message.isRoom();
         // ПР15: сообщение-ссылка на файл (атрибут file=1) → файловый пузырь.
         if ("1".equals(message.getAttributes().get("file"))) {
             DeliveryStatus st = privateChat ? parseStatus(message.getAttributes().get("st")) : null;
@@ -497,6 +618,7 @@ public class MainChatController implements ClientServiceListener {
             Map<String, Contact> previous = new HashMap<>(contactsByNick);
             contactsByNick.clear();
             contacts.setAll(broadcastContact); // общий чат всегда первый
+            contacts.addAll(roomContacts.values()); // ПР16: мои комнаты — следом
             for (UserPresence u : users) {
                 if (u.nick().equals(nick)) {
                     continue; // себя в контактах не показываем
@@ -515,6 +637,7 @@ public class MainChatController implements ClientServiceListener {
             // сохраняется (переиспользуем прежний Contact).
             for (String key : conversations.keySet()) {
                 if (Message.BROADCAST.equals(key) || key.equals(nick)
+                        || key.startsWith(Message.ROOM_PREFIX) // комнаты добавлены выше
                         || contactsByNick.containsKey(key) || conversationFor(key).isEmpty()) {
                     continue;
                 }
@@ -528,15 +651,51 @@ public class MainChatController implements ClientServiceListener {
             }
             // Восстанавливаем открытый диалог: тот же контакт, иначе общий чат.
             Contact toSelect = broadcastContact;
-            if (activeContact != null && !activeContact.isBroadcast()) {
+            if (activeContact != null && activeContact.isRoom()) {
+                Contact still = roomContacts.get(activeContact.getNick());
+                if (still != null) {
+                    toSelect = still; // комната переживает перестроение списка (ПР16)
+                }
+            } else if (activeContact != null && !activeContact.isBroadcast()) {
                 Contact still = contactsByNick.get(activeContact.getNick());
                 if (still != null) {
                     toSelect = still;
                 }
-            } else if (activeContact != null && activeContact.isBroadcast()) {
-                toSelect = broadcastContact;
             }
             contactList.getSelectionModel().select(toSelect);
+        });
+    }
+
+    @Override
+    public void onRoomList(List<String> rooms) {
+        Platform.runLater(() -> {
+            availableRooms.clear();
+            availableRooms.addAll(rooms);
+        });
+    }
+
+    @Override
+    public void onRoomMembers(String room, List<String> members) {
+        Platform.runLater(() -> {
+            if (room == null) {
+                return;
+            }
+            // Получили состав комнаты ⇒ я её участник: закрепляем строку слева.
+            roomMembers.put(room, members);
+            ensureRoomContact(room);
+            contactList.refresh();
+            if (activeContact != null && activeContact.isRoom()
+                    && activeContact.getNick().equals(room)) {
+                updateTitle(); // обновим участников в заголовке открытой комнаты
+            }
+            // Только что вошли через диалог — авто-выбираем эту комнату.
+            if (room.equals(pendingRoomSelect)) {
+                pendingRoomSelect = null;
+                Contact c = roomContacts.get(room);
+                if (c != null) {
+                    contactList.getSelectionModel().select(c);
+                }
+            }
         });
     }
 
@@ -580,21 +739,48 @@ public class MainChatController implements ClientServiceListener {
 
     /** Ячейка контакта: ник + цветной кружок статуса + бейдж непрочитанных. */
     private static class ContactCell extends ListCell<Contact> {
+        /** Контекст-меню комнаты (ПР16): «Покинуть». Целевая комната — текущий item ячейки. */
+        private final ContextMenu roomMenu;
+
+        ContactCell(MainChatController controller) {
+            MenuItem leave = new MenuItem("Покинуть комнату");
+            leave.setOnAction(e -> {
+                Contact item = getItem();
+                if (item != null && item.isRoom()) {
+                    controller.leaveRoom(item.getNick());
+                }
+            });
+            this.roomMenu = new ContextMenu(leave);
+        }
+
         @Override
         protected void updateItem(Contact item, boolean empty) {
             super.updateItem(item, empty);
-            getStyleClass().removeAll("status-online", "status-away", "status-offline", "contact-broadcast");
+            getStyleClass().removeAll("status-online", "status-away", "status-offline",
+                    "contact-broadcast", "contact-room");
             if (empty || item == null) {
                 setText(null);
+                setContextMenu(null);
                 return;
             }
-            String label = item.isBroadcast() ? "# Общий чат" : item.getNick();
+            String label;
+            if (item.isBroadcast()) {
+                label = "# Общий чат";
+            } else if (item.isRoom()) {
+                // nick = «#имя» → показываем «# имя».
+                label = "# " + item.getNick().substring(Message.ROOM_PREFIX.length());
+            } else {
+                label = item.getNick();
+            }
             if (item.getUnread() > 0) {
                 label += "  (" + item.getUnread() + ")";
             }
             setText(label);
+            setContextMenu(item.isRoom() ? roomMenu : null);
             if (item.isBroadcast()) {
                 getStyleClass().add("contact-broadcast");
+            } else if (item.isRoom()) {
+                getStyleClass().add("contact-room");
             } else {
                 getStyleClass().add(switch (item.getStatus()) {
                     case ONLINE -> "status-online";

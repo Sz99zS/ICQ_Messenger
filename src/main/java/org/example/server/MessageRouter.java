@@ -6,6 +6,7 @@ import org.example.server.store.AccountStore;
 import org.example.server.store.MessageStore;
 import org.example.server.store.OfflineStore;
 import org.example.server.store.ReadReceiptStore;
+import org.example.server.store.RoomStore;
 
 import java.util.List;
 
@@ -36,14 +37,16 @@ public class MessageRouter {
     private final AccountStore accounts;
     private final OfflineStore offline;
     private final ReadReceiptStore readReceipts;
+    private final RoomStore rooms;
 
     public MessageRouter(ClientRegistry registry, MessageStore store, AccountStore accounts,
-                         OfflineStore offline, ReadReceiptStore readReceipts) {
+                         OfflineStore offline, ReadReceiptStore readReceipts, RoomStore rooms) {
         this.registry = registry;
         this.store = store;
         this.accounts = accounts;
         this.offline = offline;
         this.readReceipts = readReceipts;
+        this.rooms = rooms;
     }
 
     /**
@@ -57,6 +60,9 @@ public class MessageRouter {
             }
             case TYPING -> deliver(message, sender);
             case READ -> handleRead(message, sender);
+            case ROOM_JOIN -> handleRoomJoin(message, sender);
+            case ROOM_LEAVE -> handleRoomLeave(message, sender);
+            case ROOM_LIST -> sendRoomList(sender);
             case PING -> { /* keep-alive: ничего не пересылаем */ }
             default -> System.out.println("[server] Игнорирую от " + sender.getNick()
                     + ": неподдерживаемый тип " + message.getType());
@@ -67,6 +73,8 @@ public class MessageRouter {
         if (message.isBroadcast()) {
             // Всем, кроме отправителя — у него сообщение уже отображено локально.
             registry.broadcast(message, sender.getNick());
+        } else if (message.isRoom()) {
+            deliverToRoom(message, sender);
         } else {
             boolean delivered = registry.sendTo(message.getTo(), message);
             if (delivered) {
@@ -97,6 +105,100 @@ public class MessageRouter {
         // Отправителю (peer): «reader прочитал твою переписку с ним».
         registry.sendTo(peer, new Message(MessageType.READ, reader.getNick(), peer, null,
                 System.currentTimeMillis()));
+    }
+
+    // ---- групповые комнаты (ПР16) ----
+
+    /**
+     * Доставка сообщения в комнату: онлайн-участникам — напрямую, оффлайн —
+     * в очередь {@link OfflineStore} (получат «непрочитанным» при входе, ПР13).
+     * Отправителю не дублируем — у него сообщение уже показано локально.
+     * Квитанций «доставлено/прочитано» для комнат нет (как и для общего чата).
+     */
+    private void deliverToRoom(Message message, ClientHandler sender) {
+        String room = message.getTo();
+        if (!rooms.isMember(room, sender.getNick())) {
+            tryNotifyError(sender, "Вы не состоите в комнате " + room);
+            return;
+        }
+        String id = message.getAttributes().get(MessageStore.ATTR_ID);
+        for (String member : rooms.membersOf(room)) {
+            if (member.equals(sender.getNick())) {
+                continue;
+            }
+            if (!registry.sendTo(member, message)) {
+                offline.enqueue(member, id); // оффлайн-участник заберёт при входе
+            }
+        }
+    }
+
+    /**
+     * Вступление в комнату {@code to=#имя} (создаётся, если её не было).
+     * Новичку проигрываем накопленный бэклог комнаты как историю, затем
+     * рассылаем участникам обновлённый состав, а при создании — всем новый
+     * список комнат.
+     */
+    private void handleRoomJoin(Message message, ClientHandler joiner) {
+        String room = message.getTo();
+        String invalid = RoomStore.validateName(room);
+        if (invalid != null) {
+            tryNotifyError(joiner, invalid);
+            return;
+        }
+        boolean created = rooms.join(room, joiner.getNick());
+        replayRoomHistory(room, joiner);
+        broadcastRoomMembers(room);
+        if (created) {
+            broadcastRoomList();
+        }
+    }
+
+    /** Выход из комнаты: обновляем состав оставшимся, а если комната опустела — список всем. */
+    private void handleRoomLeave(Message message, ClientHandler leaver) {
+        String room = message.getTo();
+        if (rooms.leave(room, leaver.getNick())) {
+            if (rooms.exists(room)) {
+                broadcastRoomMembers(room);
+            } else {
+                broadcastRoomList(); // последний вышел — комната исчезла
+            }
+        }
+    }
+
+    /** Проигрывает вступившему {@code joiner} весь бэклог комнаты как историю. */
+    private void replayRoomHistory(String room, ClientHandler joiner) {
+        for (Message past : store.roomHistory(room)) {
+            Message replay = new Message(past.getType(), past.getFrom(), past.getTo(),
+                    past.getBody(), past.getTimestamp());
+            replay.getAttributes().putAll(past.getAttributes());
+            replay.getAttributes().put(ClientHandler.ATTR_HISTORY, "1");
+            try {
+                joiner.send(replay);
+            } catch (Exception ignored) {
+                return; // соединение умерло — остальное проиграется при следующем входе
+            }
+        }
+    }
+
+    /** Рассылает текущий состав комнаты всем её онлайн-участникам. */
+    private void broadcastRoomMembers(String room) {
+        String body = String.join(",", rooms.membersOf(room));
+        for (String member : rooms.membersOf(room)) {
+            registry.sendTo(member, new Message(MessageType.ROOM_MEMBERS, "server", room, body,
+                    System.currentTimeMillis()));
+        }
+    }
+
+    /** Рассылает всем онлайн актуальный список существующих комнат. */
+    private void broadcastRoomList() {
+        registry.broadcast(new Message(MessageType.ROOM_LIST, "server", null,
+                String.join(",", rooms.allRooms()), System.currentTimeMillis()), null);
+    }
+
+    /** Отвечает на запрос {@link MessageType#ROOM_LIST} списком комнат одному клиенту. */
+    private void sendRoomList(ClientHandler target) {
+        registry.sendTo(target.getNick(), new Message(MessageType.ROOM_LIST, "server", null,
+                String.join(",", rooms.allRooms()), System.currentTimeMillis()));
     }
 
     /** Шлёт отправителю {@code sender} квитанцию «доставлено» по сообщению {@code id}. */

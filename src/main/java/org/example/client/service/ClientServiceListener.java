@@ -35,6 +35,12 @@ public interface ClientServiceListener {
     /** Обновился список онлайн-пользователей (с их статусами). */
     void onUserListChanged(List<UserPresence> users);
 
+    /** Пришёл список существующих комнат (ПР16) — для диалога «войти в комнату». */
+    void onRoomList(List<String> rooms);
+
+    /** Обновился состав комнаты {@code room} (ПР16): {@code members} — её участники. */
+    void onRoomMembers(String room, List<String> members);
+
     /** Сменилось состояние «печатает…» у пользователя {@code nick}. */
     void onTyping(String nick, boolean typing);
 

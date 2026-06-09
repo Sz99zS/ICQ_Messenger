@@ -16,6 +16,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Персистентное хранилище переписки (ПР9) с ротацией по размеру (ПР11).
@@ -180,16 +181,35 @@ public final class MessageStore {
 
     /**
      * Возвращает историю, релевантную пользователю {@code nick}: все сообщения
-     * общего чата плюс личные, где он отправитель или получатель. Порядок —
+     * общего чата, личные с его участием (отправитель/получатель) плюс сообщения
+     * комнат из {@code rooms}, в которых он состоит (ПР16). Порядок —
      * хронологический (как поступали). Снимок — безопасен для перебора вне
      * блокировки.
+     *
+     * @param rooms комнаты пользователя ({@code "#имя"}); может быть пустым
      */
-    public synchronized List<Message> historyFor(String nick) {
+    public synchronized List<Message> historyFor(String nick, Set<String> rooms) {
         List<Message> result = new ArrayList<>();
         for (Message m : history) {
             if (m.isBroadcast()
                     || nick.equals(m.getTo())
-                    || nick.equals(m.getFrom())) {
+                    || nick.equals(m.getFrom())
+                    || (m.isRoom() && rooms.contains(m.getTo()))) {
+                result.add(m);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Вся история одной комнаты {@code room} (ПР16) в хронологическом порядке.
+     * Используется при вступлении: новичку проигрывается накопленный бэклог
+     * комнаты. Снимок безопасен для перебора вне блокировки.
+     */
+    public synchronized List<Message> roomHistory(String room) {
+        List<Message> result = new ArrayList<>();
+        for (Message m : history) {
+            if (room.equals(m.getTo())) {
                 result.add(m);
             }
         }
